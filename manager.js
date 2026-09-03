@@ -2414,7 +2414,23 @@ async function verifyOrderLookup(identifier, secondaryIdentifier = null) {
 
   showLoading(true);
   try {
-    let order = orders.find(o => (o.token_number && o.token_number.toLowerCase() === cleanId.toLowerCase()) || o.id === cleanId);
+    const rawLower = cleanId.toLowerCase();
+    const strippedLower = rawLower.replace(/^#+/, '').trim();
+
+    let order = orders.find(o => {
+      if (!o) return false;
+      if (o.id && o.id.toLowerCase() === rawLower) return true;
+      if (!o.token_number) return false;
+      const tkLower = o.token_number.toLowerCase();
+      const tkStripped = tkLower.replace(/^#+/, '').trim();
+      return tkLower === rawLower || 
+             tkStripped === strippedLower || 
+             tkStripped === `tk-${strippedLower}` || 
+             tkStripped === `pos-${strippedLower}` ||
+             tkStripped === `gst-${strippedLower}` ||
+             (strippedLower.length >= 2 && tkStripped.endsWith(strippedLower));
+    });
+
     if (!order) {
       const res = await fetch(`/api/orders?lookup=${encodeURIComponent(cleanId)}`);
       const result = await res.json();
@@ -2427,12 +2443,12 @@ async function verifyOrderLookup(identifier, secondaryIdentifier = null) {
     if (order) {
       openOrderDetailModal(order);
     } else {
-      showToast("Order not found or invalid token.", "error");
+      showToast(`Order with token "${cleanId}" not found.`, "error");
     }
   } catch (err) {
     showLoading(false);
     console.error("Order lookup error:", err);
-    showToast("Failed to lookup order", "error");
+    showToast("Failed to lookup order: " + err.message, "error");
   }
 }
 

@@ -1,6 +1,98 @@
 // /api/orders.js - Comprehensive Orders Processing, Queue & Analytics API
 const { supabase, setCORS, sendResponse } = require('./_supabase');
 
+/**
+ * Robust helper to find an order by UUID or Token Number (e.g. #TK-155, TK-155, 155, #POS-100, etc.)
+ */
+async function findOrderByIdOrToken(identifier) {
+  if (!identifier) return null;
+  const raw = String(identifier).trim();
+  if (!raw) return null;
+
+  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw);
+
+  // 1. If valid UUID, query by id directly
+  if (isUUID) {
+    const { data: byId, error: errId } = await supabase
+      .from('orders')
+      .select(`
+        *,
+        students (id, name, reg_no, department),
+        order_items (
+          id,
+          quantity,
+          unit_price,
+          products (id, name, price, stock_quantity, image_url)
+        )
+      `)
+      .eq('id', raw)
+      .maybeSingle();
+
+    if (!errId && byId) return byId;
+  }
+
+  // 2. Normalize token variations
+  const clean = raw.replace(/^#+/, '').trim();
+  const variations = [
+    raw,
+    `#${clean}`,
+    clean,
+    `#TK-${clean}`,
+    `#POS-${clean}`,
+    `#GST-${clean}`,
+    `TK-${clean}`,
+    `POS-${clean}`,
+    `GST-${clean}`
+  ];
+  const uniqueVariants = [...new Set(variations.filter(Boolean))];
+
+  // Try exact / ilike matching across variations
+  for (const variant of uniqueVariants) {
+    const { data: byVariant, error: varErr } = await supabase
+      .from('orders')
+      .select(`
+        *,
+        students (id, name, reg_no, department),
+        order_items (
+          id,
+          quantity,
+          unit_price,
+          products (id, name, price, stock_quantity, image_url)
+        )
+      `)
+      .ilike('token_number', variant)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!varErr && byVariant) return byVariant;
+  }
+
+  // 3. Fuzzy match substring (e.g. user entered "155" matching "#TK-155")
+  if (clean.length >= 2) {
+    const { data: fuzzy, error: fuzErr } = await supabase
+      .from('orders')
+      .select(`
+        *,
+        students (id, name, reg_no, department),
+        order_items (
+          id,
+          quantity,
+          unit_price,
+          products (id, name, price, stock_quantity, image_url)
+        )
+      `)
+      .ilike('token_number', `%${clean}%`)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!fuzErr && fuzzy) return fuzzy;
+  }
+
+  return null;
+}
+
 module.exports = async (req, res) => {
   if (setCORS(req, res)) return;
 
@@ -13,24 +105,10 @@ module.exports = async (req, res) => {
 
       // 1A. Token / ID Lookup
       if (lookup) {
-        const cleanLookup = lookup.trim();
-        const { data: order, error } = await supabase
-          .from('orders')
-          .select(`
-            *,
-            students (id, name, reg_no, department),
-            order_items (
-              id,
-              quantity,
-              unit_price,
-              products (id, name, price, stock_quantity, image_url)
-            )
-          `)
-          .or(`token_number.ilike.${cleanLookup},id.eq.${cleanLookup}`)
-          .maybeSingle();
-
-        if (error) throw error;
-        if (!order) return sendResponse(res, 404, false, `Order "${lookup}" not found`);
+        const order = await findOrderByIdOrToken(lookup);
+        if (!order) {
+          return sendResponse(res, 404, false, `Order with token "${lookup}" not found`);
+        }
         return sendResponse(res, 200, true, order);
       }
 
@@ -257,25 +335,19 @@ module.exports = async (req, res) => {
       const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
       const { id, token, action, order_status, payment_status } = body;
 
-      let targetId = id;
-
-      // If token provided instead of ID, resolve it
-      if (!targetId && token) {
-        const { data: found } = await supabase
-          .from('orders')
-          .select('id, order_status, payment_status')
-          .or(`token_number.ilike.${token.trim()},id.eq.${token.trim()}`)
-          .maybeSingle();
-
-        if (!found) return sendResponse(res, 404, false, `Order with token "${token}" not found`);
-        targetId = found.id;
-      }
-
-      if (!targetId) {
+      const lookupIdentifier = id || token;
+      if (!lookupIdentifier) {
         return sendResponse(res, 400, false, 'Order ID or Token is required for status update');
       }
 
+      const existingOrder = await findOrderByIdOrToken(lookupIdentifier);
+      if (!existingOrder) {
+        return sendResponse(res, 404, false, `Order with token "${lookupIdentifier}" not found`);
+      }
+
+      const targetId = existingOrder.id;
       const updates = {};
+
       if (action === 'verify_and_deliver' || action === 'deliver') {
         updates.order_status = 'DELIVERED';
         updates.payment_status = 'PAID';
