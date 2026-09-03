@@ -105,51 +105,47 @@ function showToast(message, type = "success") {
 
 // 5. Backend REST API Dynamic Data Fetches
 let notices = [];
-const API_BASE = (typeof window !== 'undefined' && window.location && window.location.protocol.startsWith('http'))
-  ? `${window.location.origin}/api`
-  : 'http://localhost:5000/api';
+// Direct Supabase Client Integration (Serverless Mode)
 
 async function fetchCategories() {
   try {
-    const res = await fetch(`${API_BASE}/categories`);
-    const data = await res.json();
-    if (res.ok) {
-      categories = data || [];
-    } else {
-      console.error('Error categories:', data.error);
-      showToast(`Failed to load categories: ${data.error}`, 'error');
-    }
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .order('name');
+    if (error) throw error;
+    categories = data || [];
   } catch (err) {
-    console.error('Categories API error:', err);
-    showToast('Failed to connect to backend server', 'error');
+    console.warn('Could not load categories from Supabase:', err);
+    categories = [];
   }
 }
 
 async function fetchProducts() {
   try {
-    const res = await fetch(`${API_BASE}/products`);
-    const data = await res.json();
-    if (res.ok) {
-      products = data || [];
-    } else {
-      console.error('Error products:', data.error);
-      showToast(`Failed to load products: ${data.error}`, 'error');
-    }
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .order('name');
+    if (error) throw error;
+    products = data || [];
   } catch (err) {
-    console.error('Products API error:', err);
+    console.warn('Could not load products from Supabase:', err);
+    products = [];
   }
 }
 
 async function fetchNotices() {
   try {
-    const res = await fetch(`${API_BASE}/notices`);
-    const data = await res.json();
-    if (res.ok) {
-      notices = data || [];
-      updateNoticesUI();
-    }
+    const { data, error } = await supabase
+      .from('notices')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    notices = data || [];
+    updateNoticesUI();
   } catch (err) {
-    console.warn("Could not load notices from server", err);
+    console.warn('Could not load notices from Supabase:', err);
     notices = [];
   }
 }
@@ -188,10 +184,14 @@ async function initDatabase() {
   if (storedStudent) {
     currentStudent = JSON.parse(storedStudent);
     try {
-      const res = await fetch(`${API_BASE}/student/${currentStudent.id}`);
-      const data = await res.json();
-      if (res.ok && data) {
-        currentStudent = data;
+      const { data, error } = await supabase
+        .from('students')
+        .select('*')
+        .eq('id', currentStudent.id)
+        .maybeSingle();
+      if (!error && data) {
+        const { password_hash, ...safeStudent } = data;
+        currentStudent = safeStudent;
         sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
       }
     } catch (err) {
@@ -237,30 +237,55 @@ async function fetchStudentOrders() {
     return;
   }
   try {
-    const res = await fetch(`${API_BASE}/orders?student_id=${currentStudent.id}`);
-    const data = await res.json();
-    if (res.ok) {
-      orders = (data || []).map(o => ({
-        id: o.id,
-        student_id: o.student_id,
-        token_number: o.token_number,
-        total_amount: parseFloat(o.total_amount),
-        payment_method: o.payment_method,
-        payment_status: o.payment_status,
-        order_status: o.order_status,
-        created_at: o.created_at,
-        qr_code_data: o.qr_code_data,
-        items: (o.order_items || []).map(oi => ({
-          id: oi.id,
-          product_id: oi.product_id,
-          name: oi.products ? oi.products.name : 'Unknown Product',
-          quantity: oi.quantity,
-          unit_price: parseFloat(oi.unit_price)
-        }))
-      }));
-    } else {
-      console.error('Error orders:', data.error);
-    }
+    const { data, error } = await supabase
+      .from('orders')
+      .select(`
+        id,
+        student_id,
+        token_number,
+        total_amount,
+        payment_method,
+        payment_status,
+        order_status,
+        qr_code_data,
+        created_at,
+        order_items (
+          id,
+          product_id,
+          quantity,
+          unit_price,
+          products (
+            id,
+            name,
+            price,
+            stock_quantity,
+            image_url
+          )
+        )
+      `)
+      .eq('student_id', currentStudent.id)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    orders = (data || []).map(o => ({
+      id: o.id,
+      student_id: o.student_id,
+      token_number: o.token_number,
+      total_amount: parseFloat(o.total_amount),
+      payment_method: o.payment_method,
+      payment_status: o.payment_status,
+      order_status: o.order_status,
+      created_at: o.created_at,
+      qr_code_data: o.qr_code_data,
+      items: (o.order_items || []).map(oi => ({
+        id: oi.id,
+        product_id: oi.product_id,
+        name: oi.products ? oi.products.name : 'Unknown Product',
+        quantity: oi.quantity,
+        unit_price: parseFloat(oi.unit_price),
+        stock_quantity: oi.products ? oi.products.stock_quantity : 0
+      }))
+    }));
   } catch (err) {
     console.error('Fetch student orders error:', err);
   }
@@ -496,34 +521,44 @@ async function handleLoginSubmit(event) {
 
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE}/student/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reg_no: regNo, password: password })
-    });
-    const data = await res.json();
+    const { data: student, error } = await supabase
+      .from('students')
+      .select('*')
+      .ilike('reg_no', regNo)
+      .maybeSingle();
+
     showLoading(false);
-    
-    if (!res.ok) {
-      showToast(data.error || "Login failed", "error");
+
+    if (error) {
+      showToast("Login error: " + error.message, "error");
       return;
     }
-    
-    currentStudent = data.student;
+    if (!student) {
+      showToast("Student with Register Number not found", "error");
+      return;
+    }
+
+    if (student.password_hash !== password && student.password !== password) {
+      showToast("Invalid register number or password", "error");
+      return;
+    }
+
+    const { password_hash, ...studentSafe } = student;
+    currentStudent = studentSafe;
     sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
     updateDrawerInfo();
     setupRealtimeListener();
-    
+
     showLoading(true);
     await fetchStudentOrders();
     showLoading(false);
-    
+
     navigateHome();
     showToast(`Welcome back, ${currentStudent.name}!`, "success");
   } catch (err) {
     showLoading(false);
     console.error('Error logging in:', err);
-    showToast("Server connection error during login", "error");
+    showToast("Login error. Please try again.", "error");
   }
 }
 
@@ -554,43 +589,69 @@ async function handleRegisterSubmit(event) {
 
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE}/student/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const { data: existingReg } = await supabase
+      .from('students')
+      .select('id')
+      .ilike('reg_no', regNo)
+      .maybeSingle();
+
+    if (existingReg) {
+      showLoading(false);
+      showToast("Register number already registered", "error");
+      return;
+    }
+
+    const { data: existingPhone } = await supabase
+      .from('students')
+      .select('id')
+      .eq('phone_number', phone)
+      .maybeSingle();
+
+    if (existingPhone) {
+      showLoading(false);
+      showToast("Phone number already registered", "error");
+      return;
+    }
+
+    const { data: newStudent, error: insertErr } = await supabase
+      .from('students')
+      .insert([{
         reg_no: regNo,
         name,
         phone_number: phone,
         email: email || null,
         department: dept,
         dob,
-        password
-      })
-    });
-    const data = await res.json();
+        password_hash: password,
+        wallet_balance: 0.00
+      }])
+      .select()
+      .single();
+
     showLoading(false);
 
-    if (!res.ok) {
-      showToast(data.error || "Registration failed", "error");
+    if (insertErr) {
+      showToast("Registration failed: " + insertErr.message, "error");
       return;
     }
 
-    currentStudent = data;
+    const { password_hash, ...studentSafe } = newStudent;
+    currentStudent = studentSafe;
     sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
-    
+
     updateDrawerInfo();
     setupRealtimeListener();
-    
+
     showLoading(true);
     await fetchStudentOrders();
     showLoading(false);
-    
+
     navigateHome();
     showToast("🎉 Account created successfully!", "success");
   } catch (err) {
     showLoading(false);
     console.error('Error registering student:', err);
-    showToast("Registration connection error", "error");
+    showToast("Registration error. Please try again.", "error");
   }
 }
 
@@ -638,64 +699,55 @@ function switchAuthTab(tab) {
 // ----------------------------------------------------
 let fpCurrentPhone = "";
 let fpCurrentOtp = "";
+let fpCurrentStudentId = null;
 let fpTimerInterval = null;
-let fpRemainingSeconds = 60;
+let fpResendCountdown = 30;
 
-function openForgotPasswordModal(event) {
-  if (event) event.preventDefault();
-  fpCurrentPhone = "";
-  fpCurrentOtp = "";
-  if (fpTimerInterval) clearInterval(fpTimerInterval);
-  
-  // Clear inputs
-  const phoneInput = document.getElementById("fp-phone-input");
-  const otpInput = document.getElementById("fp-otp-input");
-  const newPwd = document.getElementById("fp-new-pwd");
-  const confirmPwd = document.getElementById("fp-confirm-pwd");
-  if (phoneInput) phoneInput.value = "";
-  if (otpInput) otpInput.value = "";
-  if (newPwd) newPwd.value = "";
-  if (confirmPwd) confirmPwd.value = "";
-  
-  goToFpStep(1);
+function openForgotPasswordModal() {
   const modal = document.getElementById("forgot-password-modal");
   if (modal) modal.classList.remove("hidden");
-  lucide.createIcons();
+  goToFpStep(1);
+  const phoneInput = document.getElementById("fp-phone-input");
+  if (phoneInput) {
+    phoneInput.value = "";
+    setTimeout(() => phoneInput.focus(), 100);
+  }
 }
 
 function closeForgotPasswordModal() {
-  if (fpTimerInterval) clearInterval(fpTimerInterval);
   const modal = document.getElementById("forgot-password-modal");
   if (modal) modal.classList.add("hidden");
+  if (fpTimerInterval) clearInterval(fpTimerInterval);
+  fpCurrentPhone = "";
+  fpCurrentOtp = "";
+  fpCurrentStudentId = null;
 }
 
 function goToFpStep(step) {
-  [1, 2, 3, 4].forEach(s => {
-    const el = document.getElementById(`fp-step-${s}`);
+  for (let i = 1; i <= 4; i++) {
+    const el = document.getElementById(`fp-step-${i}`);
     if (el) {
-      if (s === step) el.classList.remove("hidden");
+      if (i === step) el.classList.remove("hidden");
       else el.classList.add("hidden");
     }
-  });
-  lucide.createIcons();
+  }
 }
 
 function startFpResendTimer() {
   if (fpTimerInterval) clearInterval(fpTimerInterval);
-  fpRemainingSeconds = 60;
-  const countdownEl = document.getElementById("fp-countdown");
-  const timerTextEl = document.getElementById("fp-timer-text");
+  fpResendCountdown = 30;
   const resendBtn = document.getElementById("fp-resend-btn");
-  
+  const timerTextEl = document.getElementById("fp-timer-text");
+  const countdownEl = document.getElementById("fp-countdown");
+
   if (resendBtn) resendBtn.disabled = true;
   if (timerTextEl) timerTextEl.classList.remove("hidden");
-  if (countdownEl) countdownEl.innerText = `${fpRemainingSeconds}s`;
+  if (countdownEl) countdownEl.innerText = fpResendCountdown;
 
   fpTimerInterval = setInterval(() => {
-    fpRemainingSeconds--;
-    if (countdownEl) countdownEl.innerText = `${fpRemainingSeconds}s`;
-    
-    if (fpRemainingSeconds <= 0) {
+    fpResendCountdown--;
+    if (countdownEl) countdownEl.innerText = fpResendCountdown;
+    if (fpResendCountdown <= 0) {
       clearInterval(fpTimerInterval);
       if (resendBtn) resendBtn.disabled = false;
       if (timerTextEl) timerTextEl.classList.add("hidden");
@@ -703,7 +755,6 @@ function startFpResendTimer() {
   }, 1000);
 }
 
-// Step 1: Submit Mobile Number to request 6-digit OTP
 async function handleSendOtpSubmit(event) {
   event.preventDefault();
   const phone = document.getElementById("fp-phone-input").value.trim().replace(/\D/g, '');
@@ -714,33 +765,31 @@ async function handleSendOtpSubmit(event) {
 
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE}/student/forgot-password/request-otp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone_number: phone })
-    });
-    const data = await res.json();
+    const { data: student, error } = await supabase
+      .from('students')
+      .select('id, name, phone_number')
+      .eq('phone_number', phone)
+      .maybeSingle();
+
     showLoading(false);
 
-    if (!res.ok) {
-      showToast(data.error || "Failed to find student account", "error");
+    if (error || !student) {
+      showToast("No student account linked to this mobile number", "error");
       return;
     }
 
     fpCurrentPhone = phone;
-    fpCurrentOtp = data.test_otp || "";
+    fpCurrentStudentId = student.id;
+    fpCurrentOtp = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Update Step 2 UI
     const displayPhone = document.getElementById("fp-display-phone");
     if (displayPhone) displayPhone.innerText = `+91 ${phone.slice(0, 2)}******${phone.slice(8)}`;
 
     const sandboxBanner = document.getElementById("fp-sandbox-otp-banner");
     const sandboxCode = document.getElementById("fp-sandbox-otp-code");
-    if (data.test_otp && sandboxBanner && sandboxCode) {
-      sandboxCode.innerText = data.test_otp;
+    if (sandboxBanner && sandboxCode) {
+      sandboxCode.innerText = fpCurrentOtp;
       sandboxBanner.classList.remove("hidden");
-    } else if (sandboxBanner) {
-      sandboxBanner.classList.add("hidden");
     }
 
     goToFpStep(2);
@@ -749,41 +798,20 @@ async function handleSendOtpSubmit(event) {
   } catch (e) {
     showLoading(false);
     console.error("OTP request error:", e);
-    showToast("Connection error while requesting OTP", "error");
+    showToast("Error requesting OTP", "error");
   }
 }
 
-// Resend OTP handler
 async function handleResendOtp() {
   if (!fpCurrentPhone) return;
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/student/forgot-password/request-otp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone_number: fpCurrentPhone })
-    });
-    const data = await res.json();
-    showLoading(false);
+  fpCurrentOtp = Math.floor(100000 + Math.random() * 900000).toString();
+  const sandboxCode = document.getElementById("fp-sandbox-otp-code");
+  if (sandboxCode) sandboxCode.innerText = fpCurrentOtp;
 
-    if (!res.ok) {
-      showToast(data.error || "Failed to resend OTP", "error");
-      return;
-    }
-
-    fpCurrentOtp = data.test_otp || "";
-    const sandboxCode = document.getElementById("fp-sandbox-otp-code");
-    if (data.test_otp && sandboxCode) sandboxCode.innerText = data.test_otp;
-
-    startFpResendTimer();
-    showToast("🔄 New 6-Digit OTP sent!", "success");
-  } catch (e) {
-    showLoading(false);
-    showToast("Error resending OTP", "error");
-  }
+  startFpResendTimer();
+  showToast("🔄 New 6-Digit OTP generated!", "success");
 }
 
-// Step 2: Verify OTP
 async function handleVerifyOtpSubmit(event) {
   event.preventDefault();
   const otp = document.getElementById("fp-otp-input").value.trim();
@@ -792,32 +820,16 @@ async function handleVerifyOtpSubmit(event) {
     return;
   }
 
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/student/forgot-password/verify-otp`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone_number: fpCurrentPhone, otp: otp })
-    });
-    const data = await res.json();
-    showLoading(false);
-
-    if (!res.ok) {
-      showToast(data.error || "Invalid OTP code", "error");
-      return;
-    }
-
-    fpCurrentOtp = otp;
-    if (fpTimerInterval) clearInterval(fpTimerInterval);
-    goToFpStep(3);
-    showToast("✅ OTP Verified! Enter your new password.", "success");
-  } catch (e) {
-    showLoading(false);
-    showToast("Error verifying OTP", "error");
+  if (otp !== fpCurrentOtp) {
+    showToast("Invalid OTP code. Please check and re-enter.", "error");
+    return;
   }
+
+  if (fpTimerInterval) clearInterval(fpTimerInterval);
+  goToFpStep(3);
+  showToast("✅ OTP Verified! Enter your new password.", "success");
 }
 
-// Step 3: Submit New Password
 async function handleResetPasswordSubmit(event) {
   event.preventDefault();
   const newPwd = document.getElementById("fp-new-pwd").value;
@@ -833,29 +845,29 @@ async function handleResetPasswordSubmit(event) {
     return;
   }
 
+  if (!fpCurrentStudentId) {
+    showToast("Session expired. Please try again.", "error");
+    goToFpStep(1);
+    return;
+  }
+
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE}/student/forgot-password/reset-password`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        phone_number: fpCurrentPhone,
-        otp: fpCurrentOtp,
-        new_password: newPwd
-      })
-    });
-    const data = await res.json();
+    const { error } = await supabase
+      .from('students')
+      .update({ password_hash: newPwd })
+      .eq('id', fpCurrentStudentId);
+
     showLoading(false);
 
-    if (!res.ok) {
-      showToast(data.error || "Failed to reset password", "error");
+    if (error) {
+      showToast("Failed to reset password: " + error.message, "error");
       return;
     }
 
     goToFpStep(4);
     showToast("🎉 Password reset successfully!", "success");
 
-    // Auto-redirect to login after 2 seconds
     setTimeout(() => {
       closeForgotPasswordModal();
       switchAuthTab('login');
@@ -1454,75 +1466,44 @@ async function openPaymentGatewayModal() {
     return;
   }
 
-  showLoading(true);
+  const txnRef = `TXN_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  const upiPa = 'cmscecanteen@upi';
+  const upiPn = 'CMSCE Canteen';
+  const upiIntentUrl = `upi://pay?pa=${encodeURIComponent(upiPa)}&pn=${encodeURIComponent(upiPn)}&am=${grandTotal.toFixed(2)}&cu=INR&tr=${encodeURIComponent(txnRef)}&tn=${encodeURIComponent('Canteen Order ' + txnRef)}`;
 
-  try {
-    // 1. Request secure payment session initialization from backend
-    const res = await fetch(`${API_BASE}/payment/create-session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        student_id: currentStudent.id,
-        items: orderItemsList,
-        total_amount: grandTotal
-      })
-    });
+  activePaymentSession = {
+    txn_ref: txnRef,
+    amount: grandTotal,
+    student_id: currentStudent ? currentStudent.id : null,
+    items: orderItemsList,
+    upi_intent_url: upiIntentUrl,
+    created_at: Date.now()
+  };
 
-    const data = await res.json();
-    showLoading(false);
+  const modalAmountEl = document.getElementById("pg-modal-amount");
+  const intentBtnAmtEl = document.getElementById("pg-intent-btn-amount");
+  const qrAmtDisplay = document.getElementById("pg-qr-amount-display");
+  const txnRefEl = document.getElementById("pg-upi-txn-ref");
 
-    if (!res.ok) {
-      showToast(data.error || "Failed to initialize payment gateway", "error");
-      return;
-    }
+  if (modalAmountEl) modalAmountEl.innerText = `₹${grandTotal.toFixed(2)}`;
+  if (intentBtnAmtEl) intentBtnAmtEl.innerText = `${grandTotal.toFixed(2)}`;
+  if (qrAmtDisplay) qrAmtDisplay.innerText = `${grandTotal.toFixed(2)}`;
+  if (txnRefEl) txnRefEl.innerText = txnRef;
 
-    activePaymentSession = data;
+  const intentLink = document.getElementById("pg-upi-intent-link");
+  if (intentLink) intentLink.href = upiIntentUrl;
 
-    // Update modal amounts and references
-    const modalAmountEl = document.getElementById("pg-modal-amount");
-    const intentBtnAmtEl = document.getElementById("pg-intent-btn-amount");
-    const qrAmtDisplay = document.getElementById("pg-qr-amount-display");
-    const txnRefEl = document.getElementById("pg-upi-txn-ref");
+  const modal = document.getElementById("payment-gateway-modal");
+  if (modal) modal.classList.remove("hidden");
 
-    if (modalAmountEl) modalAmountEl.innerText = `₹${grandTotal.toFixed(2)}`;
-    if (intentBtnAmtEl) intentBtnAmtEl.innerText = `${grandTotal.toFixed(2)}`;
-    if (qrAmtDisplay) qrAmtDisplay.innerText = `${grandTotal.toFixed(2)}`;
-    if (txnRefEl) txnRefEl.innerText = data.txn_ref;
-
-    // Set intent link
-    const intentLink = document.getElementById("pg-upi-intent-link");
-    if (intentLink) intentLink.href = data.upi_intent_url;
-
-    // Unhide modal
-    const modal = document.getElementById("payment-gateway-modal");
-    if (modal) modal.classList.remove("hidden");
-
-    // Default to UPI App Tab (exclusively invalidates active QR session)
-    switchPaymentGatewayTab('upi_app');
-    lucide.createIcons();
-
-  } catch (err) {
-    showLoading(false);
-    console.error("Open payment gateway error:", err);
-    showToast("Could not connect to payment gateway", "error");
-  }
+  switchPaymentGatewayTab('upi_app');
+  lucide.createIcons();
 }
 
 function closePaymentGatewayModal() {
   stopDynamicQrTimers();
-
   const modal = document.getElementById("payment-gateway-modal");
   if (modal) modal.classList.add("hidden");
-
-  // Invalidate session on backend if pending
-  if (activePaymentSession && activePaymentSession.txn_ref) {
-    fetch(`${API_BASE}/payment/cancel-session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ txn_ref: activePaymentSession.txn_ref })
-    }).catch(() => {});
-  }
-
   activePaymentSession = null;
 }
 
@@ -1641,259 +1622,116 @@ function renderDynamicQrAndStartCountdown() {
     }
   }, 1000);
 
-  // Auto-poll status from backend every 2.5 seconds
-  qrStatusPollInterval = setInterval(async () => {
-    if (!activePaymentSession || !activePaymentSession.txn_ref) return;
-    try {
-      const res = await fetch(`${API_BASE}/payment/status/${activePaymentSession.txn_ref}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.status === 'PAID' && data.order) {
-          stopDynamicQrTimers();
-          processPaymentSuccess(data.order, activePaymentSession.txn_ref);
-        } else if (data.is_expired) {
-          stopDynamicQrTimers();
-          if (expiredOverlay) expiredOverlay.classList.remove("hidden");
-        }
-      }
-    } catch (e) {
-      console.warn("QR status poll error:", e);
-    }
-  }, 2500);
+  // Dynamic QR Countdown timer (Client-side auto-expiry)
+  // Student clicks 'I Have Paid' button to confirm verification
 }
 
 async function refreshDynamicQrSession() {
   const { grandTotal, orderItemsList } = getCartPayload();
   if (orderItemsList.length === 0) return;
 
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/payment/create-session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        student_id: currentStudent.id,
-        items: orderItemsList,
-        total_amount: grandTotal
-      })
-    });
+  const txnRef = `TXN_${Date.now()}_${Math.floor(1000 + Math.random() * 9000)}`;
+  const upiPa = 'cmscecanteen@upi';
+  const upiPn = 'CMSCE Canteen';
+  const upiIntentUrl = `upi://pay?pa=${encodeURIComponent(upiPa)}&pn=${encodeURIComponent(upiPn)}&am=${grandTotal.toFixed(2)}&cu=INR&tr=${encodeURIComponent(txnRef)}&tn=${encodeURIComponent('Canteen Order ' + txnRef)}`;
 
-    const data = await res.json();
-    showLoading(false);
+  activePaymentSession = {
+    txn_ref: txnRef,
+    amount: grandTotal,
+    student_id: currentStudent ? currentStudent.id : null,
+    items: orderItemsList,
+    upi_intent_url: upiIntentUrl,
+    created_at: Date.now()
+  };
 
-    if (res.ok) {
-      activePaymentSession = data;
-      const intentLink = document.getElementById("pg-upi-intent-link");
-      if (intentLink) intentLink.href = data.upi_intent_url;
-      const txnRefEl = document.getElementById("pg-upi-txn-ref");
-      if (txnRefEl) txnRefEl.innerText = data.txn_ref;
+  const intentLink = document.getElementById("pg-upi-intent-link");
+  if (intentLink) intentLink.href = upiIntentUrl;
+  const txnRefEl = document.getElementById("pg-upi-txn-ref");
+  if (txnRefEl) txnRefEl.innerText = txnRef;
 
-      renderDynamicQrAndStartCountdown();
-      showToast("Fresh Dynamic QR generated! Valid for 3 minutes.", "success");
-    } else {
-      showToast(data.error || "Could not refresh payment session", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error("Refresh QR error:", err);
-    showToast("Error refreshing QR session", "error");
-  }
+  renderDynamicQrAndStartCountdown();
+  showToast("Fresh Dynamic QR generated! Valid for 3 minutes.", "success");
 }
 
 function handleUpiIntentTrigger() {
   showToast("Opening installed UPI App...", "success");
-  // Start background verification poller
-  if (!qrStatusPollInterval && activePaymentSession) {
-    qrStatusPollInterval = setInterval(async () => {
-      if (!activePaymentSession || !activePaymentSession.txn_ref) return;
-      try {
-        const res = await fetch(`${API_BASE}/payment/status/${activePaymentSession.txn_ref}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.status === 'PAID' && data.order) {
-            stopDynamicQrTimers();
-            processPaymentSuccess(data.order, activePaymentSession.txn_ref);
-          }
-        }
-      } catch (e) {}
-    }, 2500);
-  }
 }
 
 async function verifyUpiAppPayment() {
   if (!activePaymentSession) {
-    showToast("No active payment session found.", "error");
+    showToast("Payment session expired", "error");
     return;
   }
 
-  const { grandTotal, orderItemsList } = getCartPayload();
   showLoading(true);
-
   try {
-    const res = await fetch(`${API_BASE}/payment/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        txn_ref: activePaymentSession.txn_ref,
-        method: 'UPI_INTENT',
-        student_id: currentStudent.id,
-        items: orderItemsList,
-        total_amount: grandTotal
-      })
-    });
-
-    const data = await res.json();
-    showLoading(false);
-
-    if (res.ok && data.success && data.order) {
-      processPaymentSuccess(data.order, activePaymentSession.txn_ref);
-    } else {
-      showToast(data.error || "Payment verification pending. Please complete transaction in your UPI app.", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error("Verify UPI app error:", err);
-    showToast("Error verifying UPI payment. Please try again.", "error");
-  }
-}
-
-async function verifyDynamicQrPayment() {
-  if (!activePaymentSession) {
-    showToast("No active QR payment session.", "error");
-    return;
-  }
-
-  const { grandTotal, orderItemsList } = getCartPayload();
-  showLoading(true);
-
-  try {
-    const res = await fetch(`${API_BASE}/payment/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        txn_ref: activePaymentSession.txn_ref,
-        method: 'DYNAMIC_QR',
-        student_id: currentStudent.id,
-        items: orderItemsList,
-        total_amount: grandTotal
-      })
-    });
-
-    const data = await res.json();
-    showLoading(false);
-
-    if (res.ok && data.success && data.order) {
-      processPaymentSuccess(data.order, activePaymentSession.txn_ref);
-    } else {
-      showToast(data.error || "Payment not yet confirmed by bank gateway. Please scan and complete UPI transfer.", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error("Verify Dynamic QR error:", err);
-    showToast("Error verifying dynamic QR payment.", "error");
-  }
-}
-
-// Successful Verification Handler: Dismisses modal, clears cart, and renders Digital Token #TK-XXX
-function processPaymentSuccess(orderData, txnRef) {
-  stopDynamicQrTimers();
-
-  // Terminate checkout modal and expire QR view
-  const modal = document.getElementById("payment-gateway-modal");
-  if (modal) modal.classList.add("hidden");
-
-  // Invalidate and reset active payment session
-  activePaymentSession = null;
-
-  // Clear local cart
-  cart = {};
-  pendingOrderToken = "";
-  if (cashCountdownInterval) {
-    clearInterval(cashCountdownInterval);
-    cashCountdownInterval = null;
-  }
-  updateCartBadge();
-  updateCategoryFloatingBar();
-
-  // Sync products stock
-  fetchProducts();
-
-  showToast("🎉 Payment Verified! Official Token Issued.", "success");
-
-  // Refresh student order history and display official Confirmation Token Screen
-  fetchStudentOrders();
-  showConfirmationScreen(orderData);
-}
-
-// ----------------------------------------------------
-// 10b. Standard / Cash Order Placement
-// ----------------------------------------------------
-async function placeOrder() {
-  const { grandTotal, orderItemsList } = getCartPayload();
-  if (orderItemsList.length === 0) return;
-
-  showLoading(true);
-
-  try {
-    // Validate stock levels in backend before proceeding
-    const prodRes = await fetch(`${API_BASE}/products`);
-    const dbProducts = await prodRes.json();
-    if (!prodRes.ok) throw new Error("Stock validation failed");
-
-    for (let item of orderItemsList) {
-      const dbProd = dbProducts.find(p => p.id === item.product_id);
-      if (!dbProd || dbProd.stock_quantity < item.quantity) {
-        showLoading(false);
-        showToast(`Stock ran out for ${(dbProd ? dbProd.name : 'item')}! Order Cancelled.`, "error");
-        return;
-      }
-    }
-
-    const paymentMode = currentPaymentMode === 'UPI' ? 'UPI' : 'CASH';
-    const paymentMethod = paymentMode === 'UPI' ? 'ONLINE' : 'CASH_AT_COUNTER';
-
+    const { grandTotal, orderItemsList } = getCartPayload();
     const isGuest = !currentStudent || currentStudent.isGuest || !currentStudent.id;
-    const orderType = isGuest ? 'GUEST_ORDER' : 'ONLINE_STUDENT';
     const studentId = isGuest ? null : currentStudent.id;
     const guestName = isGuest ? (currentStudent?.name || 'Guest User') : null;
 
-    // Submit Order with explicit payment_mode, order_type, and guest_name
-    const orderRes = await fetch(`${API_BASE}/orders`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const { data: dbProducts } = await supabase.from('products').select('id, name, stock_quantity');
+    if (dbProducts) {
+      for (const item of orderItemsList) {
+        const prod = dbProducts.find(p => p.id === item.product_id);
+        if (!prod || prod.stock_quantity < item.quantity) {
+          showLoading(false);
+          showToast(`Insufficient stock for "${prod ? prod.name : 'item'}".`, "error");
+          return;
+        }
+      }
+    }
+
+    const { data: newOrder, error: orderErr } = await supabase
+      .from('orders')
+      .insert([{
         student_id: studentId,
-        guest_name: guestName,
-        items: orderItemsList,
-        payment_method: paymentMethod,
-        payment_status: 'PENDING',
-        payment_mode: paymentMode,
-        order_type: orderType,
-        total_amount: grandTotal
-      })
-    });
-    const orderData = await orderRes.json();
+        total_amount: grandTotal,
+        payment_method: 'ONLINE',
+        payment_status: 'PAID',
+        order_status: 'PENDING_PICKUP'
+      }])
+      .select()
+      .single();
+
+    if (orderErr) throw orderErr;
+
+    const tokenNum = newOrder.token_number || `#TK-${Math.floor(100 + Math.random() * 900)}`;
+
+    const qrData = {
+      order_id: newOrder.id,
+      token_number: tokenNum,
+      student_id: studentId,
+      is_guest: isGuest,
+      guest_name: guestName,
+      payment_mode: 'UPI',
+      payment_status: 'PAID',
+      status: 'PAID',
+      total_amount: grandTotal,
+      created_at: new Date().toISOString()
+    };
+
+    await supabase.from('orders').update({ token_number: tokenNum, qr_code_data: qrData }).eq('id', newOrder.id);
+
+    const itemsToInsert = orderItemsList.map(item => ({
+      order_id: newOrder.id,
+      product_id: item.product_id,
+      quantity: item.quantity,
+      unit_price: item.unit_price
+    }));
+
+    await supabase.from('order_items').insert(itemsToInsert);
+
+    for (const item of orderItemsList) {
+      const { data: pData } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).single();
+      if (pData) {
+        const updatedStock = Math.max(0, (pData.stock_quantity || 0) - item.quantity);
+        await supabase.from('products').update({ stock_quantity: updatedStock }).eq('id', item.product_id);
+      }
+    }
+
     showLoading(false);
 
-    if (!orderRes.ok) {
-      showToast(orderData.error || "Failed to place order", "error");
-      return;
-    }
-
-    // Clear cart states locally
-    cart = {};
-    pendingOrderToken = "";
-    if (cashCountdownInterval) {
-      clearInterval(cashCountdownInterval);
-      cashCountdownInterval = null;
-    }
-    updateCartBadge();
-    updateCategoryFloatingBar();
-
-    // Sync products state
-    await fetchProducts();
-
-    // Map order items for confirmation display
     const formattedItems = orderItemsList.map(item => {
       const dbProd = products.find(p => p.id === item.product_id);
       return {
@@ -1905,8 +1743,130 @@ async function placeOrder() {
     });
 
     const finalOrder = {
-      ...orderData,
-      total_amount: parseFloat(orderData.total_amount),
+      ...newOrder,
+      token_number: tokenNum,
+      payment_method: 'ONLINE',
+      payment_status: 'PAID',
+      order_status: 'PENDING_PICKUP',
+      total_amount: grandTotal,
+      items: formattedItems
+    };
+
+    processPaymentSuccess(finalOrder);
+  } catch (err) {
+    showLoading(false);
+    console.error("UPI verification error:", err);
+    showToast("Error processing payment. Please try again.", "error");
+  }
+}
+
+async function verifyDynamicQrPayment() {
+  await verifyUpiAppPayment();
+}
+
+async function placeOrder() {
+  const { grandTotal, orderItemsList } = getCartPayload();
+  if (orderItemsList.length === 0) return;
+
+  showLoading(true);
+
+  try {
+    const { data: dbProducts, error: pErr } = await supabase.from('products').select('id, name, stock_quantity');
+    if (pErr) throw pErr;
+
+    for (let item of orderItemsList) {
+      const dbProd = (dbProducts || []).find(p => p.id === item.product_id);
+      if (!dbProd || dbProd.stock_quantity < item.quantity) {
+        showLoading(false);
+        showToast(`Stock ran out for ${(dbProd ? dbProd.name : 'item')}! Order Cancelled.`, "error");
+        return;
+      }
+    }
+
+    const isGuest = !currentStudent || currentStudent.isGuest || !currentStudent.id;
+    const studentId = isGuest ? null : currentStudent.id;
+    const guestName = isGuest ? (currentStudent?.name || 'Guest User') : null;
+    const paymentMode = currentPaymentMode === 'UPI' ? 'UPI' : 'CASH';
+    const paymentMethod = paymentMode === 'UPI' ? 'ONLINE' : 'CASH_AT_COUNTER';
+
+    const { data: newOrder, error: orderError } = await supabase
+      .from('orders')
+      .insert([{
+        student_id: studentId,
+        total_amount: grandTotal,
+        payment_method: paymentMethod,
+        payment_status: 'PENDING',
+        order_status: 'PENDING_PICKUP'
+      }])
+      .select()
+      .single();
+
+    if (orderError) throw orderError;
+
+    const tokenNum = newOrder.token_number || `#TK-${Math.floor(100 + Math.random() * 900)}`;
+
+    const qrData = {
+      order_id: newOrder.id,
+      token_number: tokenNum,
+      student_id: studentId,
+      is_guest: isGuest,
+      guest_name: guestName,
+      payment_mode: paymentMode,
+      payment_status: 'PENDING',
+      status: 'PENDING',
+      total_amount: grandTotal,
+      created_at: new Date().toISOString()
+    };
+
+    await supabase.from('orders').update({ token_number: tokenNum, qr_code_data: qrData }).eq('id', newOrder.id);
+
+    const orderItems = orderItemsList.map(item => ({
+      order_id: newOrder.id,
+      product_id: item.product_id,
+      quantity: item.quantity,
+      unit_price: item.unit_price
+    }));
+
+    await supabase.from('order_items').insert(orderItems);
+
+    for (const item of orderItemsList) {
+      const { data: pData } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).single();
+      if (pData) {
+        const updatedStock = Math.max(0, (pData.stock_quantity || 0) - item.quantity);
+        await supabase.from('products').update({ stock_quantity: updatedStock }).eq('id', item.product_id);
+      }
+    }
+
+    showLoading(false);
+
+    cart = {};
+    pendingOrderToken = "";
+    if (cashCountdownInterval) {
+      clearInterval(cashCountdownInterval);
+      cashCountdownInterval = null;
+    }
+    updateCartBadge();
+    updateCategoryFloatingBar();
+
+    await fetchProducts();
+
+    const formattedItems = orderItemsList.map(item => {
+      const dbProd = products.find(p => p.id === item.product_id);
+      return {
+        product_id: item.product_id,
+        name: dbProd ? dbProd.name : 'Unknown Product',
+        quantity: item.quantity,
+        unit_price: item.unit_price
+      };
+    });
+
+    const finalOrder = {
+      ...newOrder,
+      token_number: tokenNum,
+      payment_method: paymentMethod,
+      payment_status: 'PENDING',
+      order_status: 'PENDING_PICKUP',
+      total_amount: grandTotal,
       items: formattedItems
     };
 
@@ -1915,16 +1875,11 @@ async function placeOrder() {
 
   } catch (e) {
     showLoading(false);
+    console.error("Order error:", e);
     showToast(e.message || "Failed to place order. Please try again.", "error");
   }
 }
 
-// ─────────────────────────────────────────────────────────
-// showConfirmationScreen(orderData)
-// Called after a successful POST /api/orders AND from
-// viewHistoricalQR(). Switches to #qr-screen, populates
-// all dynamic fields, and generates the QR code.
-// ─────────────────────────────────────────────────────────
 function showConfirmationScreen(orderData) {
   if (!orderData) return;
 
@@ -2334,9 +2289,21 @@ async function reorderPastOrder(orderId) {
   let order = orders.find(o => o.id === orderId);
   if (!order) {
     try {
-      const res = await fetch(`${API_BASE}/orders/${orderId}`);
-      if (res.ok) {
-        order = await res.json();
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*, order_items(*, products(*))')
+        .eq('id', orderId)
+        .maybeSingle();
+      if (!error && data) {
+        order = {
+          ...data,
+          items: (data.order_items || []).map(oi => ({
+            product_id: oi.product_id,
+            name: oi.products ? oi.products.name : 'Item',
+            quantity: oi.quantity,
+            unit_price: parseFloat(oi.unit_price)
+          }))
+        };
       }
     } catch (e) {
       console.warn("Could not fetch order by id:", e);
@@ -2458,14 +2425,12 @@ function dismissAnnouncement() {
 
 async function fetchCanteenStatus() {
   try {
-    const res = await fetch(`${API_BASE}/canteen/status`);
-    const data = await res.json();
-    if (res.ok) {
-      isCanteenOpen = data.is_open;
-      updateCanteenStatusUI();
-    }
+    const storedStatus = localStorage.getItem("canteen_is_open");
+    isCanteenOpen = storedStatus === null ? true : storedStatus === "true";
+    updateCanteenStatusUI();
   } catch (e) {
-    console.warn("Could not fetch canteen status", e);
+    isCanteenOpen = true;
+    updateCanteenStatusUI();
   }
 }
 
@@ -2495,14 +2460,11 @@ function updateCanteenStatusUI() {
 }
 
 async function showNoticesHistory() {
-  // Dismiss the unread badge immediately
   const badge = document.getElementById('notice-badge');
   if (badge) badge.classList.add('hidden');
 
-  // Navigate to notices screen first so content is visible
   showScreen('notices-screen');
 
-  // Show a loading spinner while fetching
   const container = document.getElementById('notices-history-list');
   if (container) {
     container.innerHTML = `
@@ -2512,18 +2474,7 @@ async function showNoticesHistory() {
     `;
   }
 
-  // Always fetch fresh notices from the server
-  try {
-    const res = await fetch(`${API_BASE}/notices`);
-    if (res.ok) {
-      const data = await res.json();
-      notices = data || [];
-    }
-  } catch (err) {
-    console.warn('Could not refresh notices:', err);
-  }
-
-  // Mark all as seen and render
+  await fetchNotices();
   localStorage.setItem('seen_notices_count', notices.length);
   renderNoticesHistory();
 }

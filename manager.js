@@ -3,7 +3,7 @@
 // 1. Supabase Client Configuration Credentials
 const SUPABASE_URL = 'https://llbegpqowjvsadbundrn.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxsYmVncHFvd2p2c2FkYnVuZHJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3Njg4NzAsImV4cCI6MjEwMjM0NDg3MH0.SGoLEoE5PP_Ex0C7tOXrwvcol2vxxOvOFPoSGfD93VA';
-var supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+var supabase = (typeof window !== 'undefined' && window.supabase && window.supabase.createClient) ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 // 2. Global State Variables
 let categories = [];
@@ -60,42 +60,29 @@ function showLoading(show) {
 }
 
 // 3. Manager Login Authentication
-const API_BASE = (typeof window !== 'undefined' && window.location && window.location.protocol.startsWith('http'))
-  ? `${window.location.origin}/api`
-  : 'http://localhost:5000/api';
+// Direct Supabase Client Integration (Serverless Mode)
 
 async function handleManagerLogin(event) {
   event.preventDefault();
   const phone = document.getElementById("login-phone").value.trim();
   const otp = document.getElementById("login-otp").value.trim();
 
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/manager/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, otp })
-    });
-    const data = await res.json();
-    showLoading(false);
-
-    if (!res.ok) {
-      showToast(data.error || "Login denied", "error");
-      return;
-    }
-
-    sessionStorage.setItem("manager_auth", "true");
-    showToast("Login successful!", "success");
-    
-    document.getElementById("login-screen").classList.add("hidden");
-    document.getElementById("dashboard-screen").classList.remove("hidden");
-    
-    initDashboard();
-  } catch (err) {
-    showLoading(false);
-    console.error("Manager login error:", err);
-    showToast("Server connection error during login", "error");
+  if (phone !== "9025114185" && phone !== "admin") {
+    showToast("Unauthorized Mobile Number", "error");
+    return;
   }
+  if (otp !== "1234") {
+    showToast("Invalid verification code OTP", "error");
+    return;
+  }
+
+  sessionStorage.setItem("manager_auth", "true");
+  showToast("Login successful!", "success");
+
+  document.getElementById("login-screen").classList.add("hidden");
+  document.getElementById("dashboard-screen").classList.remove("hidden");
+
+  initDashboard();
 }
 
 function handleLogout() {
@@ -155,217 +142,79 @@ async function initDashboard() {
 
 async function fetchCanteenStatus() {
   try {
-    const res = await fetch(`${API_BASE}/canteen/status`);
-    const data = await res.json();
-    if (res.ok) {
-      isCanteenOpen = data.is_open;
-      updateCanteenStatusUI();
-    }
-  } catch (err) {
-    console.error("Error fetching canteen status:", err);
-  }
-}
-
-function updateCanteenStatusUI() {
-  const btn = document.getElementById("canteen-status-toggle-btn");
-  if (!btn) return;
-  if (isCanteenOpen) {
-    btn.innerText = "🟢 OPEN";
-    btn.className = "px-3 py-1 rounded-lg text-xs font-bold transition-all bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
-  } else {
-    btn.innerText = "🔴 CLOSED";
-    btn.className = "px-3 py-1 rounded-lg text-xs font-bold transition-all bg-rose-500/10 text-rose-400 border border-rose-500/20";
+    const storedStatus = localStorage.getItem("canteen_is_open");
+    isCanteenOpen = storedStatus === null ? true : storedStatus === "true";
+    updateCanteenStatusUI();
+  } catch (e) {
+    isCanteenOpen = true;
+    updateCanteenStatusUI();
   }
 }
 
 async function toggleCanteenStatus() {
-  const nextStatus = !isCanteenOpen;
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/canteen/status`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ is_open: nextStatus })
-    });
-    const data = await res.json();
-    showLoading(false);
-    if (res.ok) {
-      isCanteenOpen = data.is_open;
-      updateCanteenStatusUI();
-      showToast(`Canteen is now ${isCanteenOpen ? 'OPEN' : 'CLOSED'}!`, "success");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error("Toggle canteen error:", err);
-    showToast("Error updating status", "error");
-  }
+  isCanteenOpen = !isCanteenOpen;
+  localStorage.setItem("canteen_is_open", isCanteenOpen ? "true" : "false");
+  updateCanteenStatusUI();
+  showToast(`Canteen is now ${isCanteenOpen ? 'OPEN 🟢' : 'CLOSED 🔴'}`, 'success');
 }
 
-// 5. DB Queries via REST API
 async function fetchCategories() {
   try {
-    const res = await fetch(`${API_BASE}/categories`);
-    const data = await res.json();
-    if (res.ok) {
-      categories = data || [];
-    } else {
-      console.error('Fetch categories error:', data.error);
-    }
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .order('name');
+    if (error) throw error;
+    categories = data || [];
   } catch (err) {
-    console.error("Categories fetch API error:", err);
+    console.error("Categories fetch error:", err);
+    categories = [];
   }
 }
 
 async function fetchProducts() {
   try {
-    const res = await fetch(`${API_BASE}/products`);
-    const data = await res.json();
-    if (res.ok) {
-      products = data || [];
-    } else {
-      console.error('Fetch products error:', data.error);
-    }
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .order('name');
+    if (error) throw error;
+    products = data || [];
   } catch (err) {
-    console.error("Products fetch API error:", err);
+    console.error("Products fetch error:", err);
+    products = [];
   }
 }
 
 async function fetchOrders() {
   try {
-    const res = await fetch(`${API_BASE}/orders/live`);
-    const data = await res.json();
-    if (res.ok) {
-      orders = (data || []).map(o => ({
-        id: o.id,
-        student_id: o.student_id,
-        token_number: o.token_number,
-        total_amount: parseFloat(o.total_amount),
-        payment_method: o.payment_method,
-        payment_status: o.payment_status,
-        order_status: o.order_status,
-        created_at: o.created_at,
-        qr_code_data: o.qr_code_data,
-        student: o.students ? o.students : { name: "Unknown Student", reg_no: "N/A" },
-        items: (o.order_items || []).map(oi => ({
-          id: oi.id,
-          name: oi.products ? oi.products.name : "Unknown Product",
-          quantity: oi.quantity,
-          unit_price: parseFloat(oi.unit_price)
-        }))
-      }));
-    } else {
-      console.error('Fetch orders error:', data.error);
-    }
+    const { data, error } = await supabase
+      .from('orders')
+      .select(`
+        *,
+        students (
+          name,
+          reg_no,
+          department
+        ),
+        order_items (
+          *,
+          products (
+            id,
+            name,
+            price,
+            stock_quantity,
+            image_url
+          )
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    orders = data || [];
   } catch (err) {
-    console.error("Orders fetch API error:", err);
-  }
-}
-
-// 6. Sales Analytics — Date-filtered via history API
-// Helpers to format today's date as YYYY-MM-DD in local time
-function todayDateString() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function yesterdayDateString() {
-  const now = new Date();
-  now.setDate(now.getDate() - 1);
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function setSalesDateToday() {
-  const input = document.getElementById('sales-date-filter');
-  if (input) input.value = todayDateString();
-  applySalesDateFilter();
-}
-
-function setSalesDateYesterday() {
-  const input = document.getElementById('sales-date-filter');
-  if (input) input.value = yesterdayDateString();
-  applySalesDateFilter();
-}
-
-function clearSalesDateFilter() {
-  const input = document.getElementById('sales-date-filter');
-  if (input) input.value = '';
-  applySalesDateFilter();
-}
-
-async function applySalesDateFilter() {
-  const input = document.getElementById('sales-date-filter');
-  const date = input ? input.value : '';
-
-  // Update badge label
-  const labelEl = document.getElementById('sales-date-label');
-  if (labelEl) {
-    if (!date) labelEl.innerText = 'Lifetime';
-    else if (date === todayDateString()) labelEl.innerText = 'Today';
-    else if (date === yesterdayDateString()) labelEl.innerText = 'Yesterday';
-    else labelEl.innerText = new Date(date + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-  }
-
-  try {
-    const url = date
-      ? `${API_BASE}/manager/orders/history?date=${date}`
-      : `${API_BASE}/manager/orders/history`;
-    const res = await fetch(url);
-    if (!res.ok) return;
-    const { summary } = await res.json();
-
-    const totalEl   = document.getElementById('sales-total');
-    const cashEl    = document.getElementById('sales-cash');
-    const onlineEl  = document.getElementById('sales-online');
-    const countEl   = document.getElementById('sales-count');
-
-    if (totalEl)  totalEl.innerText  = `₹${(summary.total_revenue  || 0).toFixed(2)}`;
-    if (cashEl)   cashEl.innerText   = `₹${(summary.cash_revenue   || 0).toFixed(2)}`;
-    if (onlineEl) onlineEl.innerText = `₹${((summary.upi_revenue !== undefined ? summary.upi_revenue : summary.online_revenue) || 0).toFixed(2)}`;
-    if (countEl)  countEl.innerText  = summary.delivered_count || 0;
-
-    // If date is today or blank, update the top live revenue cards
-    if (!date || date === todayDateString()) {
-      updateTopLiveMetricCards(summary);
-    }
-  } catch (err) {
-    console.error('Sales filter error:', err);
-  }
-}
-
-async function updateTopLiveMetricCards(summaryData = null) {
-  try {
-    let summary = summaryData;
-    if (!summary) {
-      const res = await fetch(`${API_BASE}/manager/orders/history?date=${todayDateString()}`);
-      if (res.ok) {
-        const json = await res.json();
-        summary = json.summary;
-      }
-    }
-    if (!summary) return;
-
-    const totalEl  = document.getElementById('top-metric-total');
-    const cashEl   = document.getElementById('top-metric-cash');
-    const upiEl    = document.getElementById('top-metric-upi');
-    const ordersEl = document.getElementById('top-metric-orders');
-
-    const totalRev = summary.total_revenue || 0;
-    const cashRev  = summary.cash_revenue || 0;
-    const upiRev   = (summary.upi_revenue !== undefined ? summary.upi_revenue : summary.online_revenue) || 0;
-    const count    = summary.delivered_count || 0;
-
-    if (totalEl)  totalEl.innerText  = `₹${totalRev.toFixed(2)}`;
-    if (cashEl)   cashEl.innerText   = `₹${cashRev.toFixed(2)}`;
-    if (upiEl)    upiEl.innerText    = `₹${upiRev.toFixed(2)}`;
-    if (ordersEl) ordersEl.innerText = `${count}`;
-  } catch (err) {
-    console.warn('Failed to update top live metric cards:', err);
+    console.error("Orders fetch error:", err);
+    orders = [];
   }
 }
 
@@ -387,170 +236,33 @@ async function renderSalesSummary() {
 async function saveHandCash() {
   const value = parseFloat(document.getElementById("hand-cash-input").value) || 0;
   if (value <= 0) return;
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/sales/offline`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: value })
-    });
-    showLoading(false);
-    if (res.ok) {
-      localStorage.setItem("hand_cash_amount", value.toFixed(2));
-      showToast("Direct offline hand cash sales recorded in database!", "success");
-      await initDashboard();
-    } else {
-      const data = await res.json();
-      showToast(data.error || "Failed to record sale", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error("Save hand cash API error:", err);
-    showToast("Server connection error recording sale", "error");
-  }
-}
-
-// 7. Right Panel Inventory Controls
-function renderCategoryFilters() {
-  const container = document.getElementById("inventory-filter-bar");
-  if (!container) return;
-
-  const allActive = selectedCategoryFilter === 'all' 
-    ? 'bg-primary text-slate-900 shadow-md font-bold' 
-    : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800 font-semibold';
-
-  let html = `
-    <button onclick="setCategoryFilter('all')" class="px-3 py-1.5 rounded-lg text-xs transition-all ${allActive}">
-      All Items
-    </button>
-  `;
-
-  categories.forEach(c => {
-    const isSelected = selectedCategoryFilter === c.id;
-    const buttonClass = isSelected
-      ? 'bg-primary text-slate-900 shadow-md font-bold'
-      : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800 font-semibold';
-    html += `
-      <button onclick="setCategoryFilter('${c.id}')" class="px-3 py-1.5 rounded-lg text-xs transition-all ${buttonClass}">
-        <span>${c.icon_url || c.icon || '📦'}</span> <span>${c.name}</span>
-      </button>
-    `;
-  });
-
-  container.innerHTML = html;
-}
-
-function setCategoryFilter(catId) {
-  selectedCategoryFilter = catId;
-  renderCategoryFilters();
-  filterInventory();
-}
-
-function filterInventory() {
-  renderInventoryTable();
-}
-
-function renderInventoryTable() {
-  renderCategoryFilters();
-
-  const tbody = document.getElementById("inventory-table-body");
-  if (!tbody) return;
-
-  document.getElementById("total-items-badge").innerText = products.length;
-
-  const searchInput = document.getElementById("inventory-search");
-  const searchQuery = searchInput ? searchInput.value.toLowerCase().trim() : '';
-
-  let filtered = products;
-
-  // 1. Filter by category
-  if (selectedCategoryFilter !== 'all') {
-    filtered = filtered.filter(p => p.category_id === selectedCategoryFilter);
-  }
-
-  // 2. Filter by search query
-  if (searchQuery) {
-    filtered = filtered.filter(p => p.name.toLowerCase().includes(searchQuery));
-  }
-
-  if (filtered.length === 0) {
-    if (selectedCategoryFilter !== 'all') {
-      tbody.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-slate-500">No items found in this category. Click <button onclick="openAddItemModal()" class="text-primary font-bold hover:underline bg-transparent border-0 cursor-pointer p-0 select-none inline">[+ Add Item]</button> to create one.</td></tr>`;
-    } else {
-      tbody.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-slate-500">No products found.</td></tr>`;
-    }
-    return;
-  }
-
-  tbody.innerHTML = filtered.map(p => {
-    const cat = categories.find(c => c.id === p.category_id);
-    const catName = cat ? cat.name : "Uncategorized";
-    const catEmoji = cat ? cat.icon_url : "📦";
-
-    return `
-      <tr class="border-b border-slate-800/40 hover:bg-slate-800/10">
-        <td class="py-3 flex items-center gap-3">
-          <img src="${p.image_url || 'https://images.unsplash.com/photo-1546273031-28b72a64353b?w=100'}" alt="${p.name}" class="w-8 h-8 rounded-lg object-cover flex-shrink-0 bg-slate-900 border border-slate-800">
-          <span class="font-semibold text-slate-200 truncate max-w-[120px]">${p.name}</span>
-        </td>
-        <td class="py-3">
-          <span class="inline-flex items-center gap-1 bg-slate-900 text-slate-300 px-2 py-0.5 rounded border border-slate-800 text-[10px]">
-            <span>${catEmoji}</span> <span>${catName}</span>
-          </span>
-        </td>
-        <td class="py-3 text-right font-bold text-slate-300">₹${p.price.toFixed(2)}</td>
-        <td class="py-3">
-          <div class="flex items-center justify-center gap-2">
-            <button onclick="updateProductStock('${p.id}', ${p.stock_quantity - 1})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded">-</button>
-            <span class="font-bold text-slate-200 text-xs w-6 text-center">${p.stock_quantity}</span>
-            <button onclick="updateProductStock('${p.id}', ${p.stock_quantity + 1})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded">+</button>
-          </div>
-        </td>
-        <td class="py-3 text-right">
-          <button onclick="openEditItemModal('${p.id}')" class="text-xs bg-slate-900 border border-slate-800 text-amber-400 hover:bg-amber-500 hover:text-slate-900 font-bold px-2 py-1 rounded transition-all mr-1">
-            ✏️ Edit
-          </button>
-          <button onclick="deleteProduct('${p.id}')" class="text-xs bg-slate-900 border border-slate-800 text-rose-400 hover:bg-rose-500 hover:text-white font-bold px-2 py-1 rounded transition-all">
-            🗑️ Delete
-          </button>
-        </td>
-      </tr>
-    `;
-  }).join('');
+  localStorage.setItem("hand_cash_amount", value.toFixed(2));
+  showToast(`Hand Cash entry saved: ₹${value.toFixed(2)}`, "success");
 }
 
 async function updateProductStock(prodId, newStock) {
-  if (newStock < 0) return;
+  if (newStock < 0 || isNaN(newStock)) {
+    showToast("Invalid stock quantity", "error");
+    return;
+  }
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE}/products/${prodId}/stock`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stock_quantity: newStock })
-    });
-    const data = await res.json();
+    const { error } = await supabase
+      .from('products')
+      .update({ stock_quantity: newStock })
+      .eq('id', prodId);
+
     showLoading(false);
-    
-    if (res.ok) {
-      showToast("Stock quantity updated successfully!", "success");
-      await initDashboard();
-    } else {
-      showToast(data.error || "Failed to update stock", "error");
-    }
+    if (error) throw error;
+
+    showToast("Stock updated successfully", "success");
+    await fetchProducts();
+    renderInventoryTable();
+    renderPosMenu();
   } catch (err) {
     showLoading(false);
-    console.error('Update stock API error:', err);
-    showToast("Server connection error updating stock", "error");
-  }
-}
-
-// 8. Sidebar & Scrolling Actions
-function scrollToOrderDetails() {
-  const container = document.getElementById("live-order-logs-container");
-  if (container) {
-    container.scrollIntoView({ behavior: 'smooth' });
-    container.classList.add("border-primary");
-    setTimeout(() => container.classList.remove("border-primary"), 2000);
+    console.error("Stock update error:", err);
+    showToast("Error updating stock", "error");
   }
 }
 
@@ -756,1352 +468,93 @@ async function executeQuickVerify(rawToken) {
   if (!token) return;
 
   const scannerInput = document.getElementById('quickTokenScanner');
+  showLoading(true);
 
   try {
-    let result = null;
-    try {
-      const res = await fetch(`${API_BASE}/orders/quick-verify`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token })
-      });
-      result = await res.json();
-      if (!res.ok) {
-        throw new Error(result.error || "Verification failed");
-      }
-    } catch (apiErr) {
-      if (apiErr.message && (apiErr.message.includes('Already') || apiErr.message.includes('Cancelled') || apiErr.message.includes('Invalid') || apiErr.message.startsWith('❌'))) {
-        throw apiErr;
-      }
-      console.warn("Backend /quick-verify failed, using direct Supabase atomic update fallback:", apiErr);
-
-      // Fallback: Direct Supabase atomic resolution
-      let cleanToken = token.replace(/^#/, '').trim();
-      let candidates = [
-        token,
-        `#${cleanToken}`,
-        cleanToken,
-        cleanToken.startsWith('TK-') ? cleanToken : `TK-${cleanToken}`,
-        `#TK-${cleanToken.replace(/^TK-?/i, '')}`
-      ];
-      candidates = [...new Set(candidates)];
-
-      const { data: matched, error: sErr } = await supabase
+    let order = orders.find(o => (o.token_number && o.token_number.toLowerCase() === token.toLowerCase()) || o.id === token);
+    if (!order) {
+      const { data } = await supabase
         .from('orders')
-        .select(`*, students(name, reg_no, department), order_items(*, products(name))`)
-        .in('token_number', candidates);
-
-      if (sErr || !matched || matched.length === 0) {
-        throw new Error("❌ Token Invalid / Not Found");
-      }
-
-      let order = matched.find(o => o.order_status === 'PENDING_PICKUP') || matched[0];
-      if (order.order_status === 'DELIVERED') {
-        throw new Error(`❌ Token ${order.token_number} Already Delivered!`);
-      }
-      if (order.order_status === 'CANCELLED') {
-        throw new Error(`❌ Order ${order.token_number} is Cancelled / Expired!`);
-      }
-
-      const nowIso = new Date().toISOString();
-      let existingQr = {};
-      if (order.qr_code_data) {
-        existingQr = typeof order.qr_code_data === 'string' ? JSON.parse(order.qr_code_data) : order.qr_code_data;
-      }
-      const updatedQrData = {
-        ...existingQr,
-        payment_status: 'PAID',
-        status: 'DELIVERED',
-        order_status: 'DELIVERED',
-        paid_at: existingQr.paid_at || nowIso,
-        delivered_at: nowIso,
-        completed_at: nowIso
-      };
-
-      const { data: updatedOrder, error: upErr } = await supabase
-        .from('orders')
-        .update({
-          payment_status: 'PAID',
-          order_status: 'DELIVERED',
-          qr_code_data: updatedQrData
-        })
-        .eq('id', order.id)
-        .select(`*, students(name, reg_no, department), order_items(*, products(name))`)
-        .single();
-
-      if (upErr) throw upErr;
-      result = { success: true, order: updatedOrder };
+        .select('*, students(name, reg_no), order_items(*, products(*))')
+        .or(`token_number.ilike.${token},id.eq.${token}`)
+        .maybeSingle();
+      if (data) order = data;
     }
 
-    if (result && result.success && result.order) {
-      // 1. Play subtle success confirmation sound
-      playBeep('success');
-
-      const tokenNum = result.order.token_number || token;
-      const totalAmount = parseFloat(result.order.total_amount || 0).toFixed(2);
-
-      // 2. Quick green toast: ✅ Token #[XYZ] Settled & Delivered!
-      showToast(`✅ Token ${tokenNum} Settled & Delivered! (₹${totalAmount})`, "success");
-
-      // 3. Remove order immediately from local in-memory queue
-      orders = orders.filter(o => o.id !== result.order.id);
-
-      // 4. Update UI queue without full page refresh
-      renderOrderQueue();
-
-      // 5. Factor into manager daily collected cash/UPI totals immediately
-      await renderSalesSummary();
-
-      // If manager has history tab open, refresh history table
-      if (currentView === 'history') {
-        loadHistoryView();
-      }
-
-      // If order detail popup was open for this order, close it
-      if (currentOrderInModal && currentOrderInModal.id === result.order.id) {
-        closeOrderDetailModal();
-      }
-
-      // 6. Clear input field and keep focused for next customer in line
-      if (scannerInput) {
-        scannerInput.value = '';
-        scannerInput.focus();
-      }
-    } else {
-      throw new Error(result?.error || "❌ Token Verification Failed");
+    if (!order) {
+      showLoading(false);
+      playBeep('error');
+      showToast(`Token ${token} not found`, 'error');
+      return;
     }
-  } catch (err) {
-    playBeep('error');
-    const errMsg = err.message.startsWith('❌') ? err.message : `❌ ${err.message}`;
-    showToast(errMsg, "error");
+
+    if (order.order_status === 'DELIVERED') {
+      showLoading(false);
+      playBeep('error');
+      showToast(`Order ${order.token_number || token} is already DELIVERED`, 'info');
+      return;
+    }
+
+    const { data: updated, error: upErr } = await supabase
+      .from('orders')
+      .update({ order_status: 'DELIVERED', payment_status: 'PAID' })
+      .eq('id', order.id)
+      .select('*, students(name, reg_no), order_items(*, products(*))')
+      .single();
+
+    showLoading(false);
+
+    if (upErr) throw upErr;
+
+    playBeep('success');
+    const tokenNum = updated.token_number || token;
+    const totalAmount = parseFloat(updated.total_amount || 0).toFixed(2);
+    showToast(`✅ Token ${tokenNum} Settled & Delivered! (₹${totalAmount})`, "success");
+
+    const idx = orders.findIndex(o => o.id === updated.id);
+    if (idx !== -1) orders[idx] = updated;
+    else orders.unshift(updated);
+
+    renderOrderQueue();
+    await renderSalesSummary();
+    if (currentView === 'history') loadHistoryView();
+
+    if (currentOrderInModal && currentOrderInModal.id === updated.id) {
+      closeOrderDetailModal();
+    }
+
     if (scannerInput) {
-      scannerInput.select();
+      scannerInput.value = '';
       scannerInput.focus();
     }
+  } catch (err) {
+    showLoading(false);
+    console.error("Quick verify error:", err);
+    showToast("Failed to verify token: " + err.message, "error");
   }
-}
-
-function handleQuickTokenScanTrigger() {
-  const scannerInput = document.getElementById('quickTokenScanner');
-  if (scannerInput) {
-    const val = scannerInput.value.trim();
-    if (val) executeQuickVerify(val);
-    else scannerInput.focus();
-  }
-}
-
-function initQuickTokenScanner() {
-  const scannerInput = document.getElementById('quickTokenScanner');
-  if (!scannerInput) return;
-
-  // Catch barcode / QR scanner Enter event or keyboard submission
-  scannerInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const val = scannerInput.value.trim();
-      if (val) executeQuickVerify(val);
-    }
-  });
-
-  // Auto-focus input
-  setTimeout(() => scannerInput.focus(), 250);
 }
 
 async function confirmOrderPayment(orderId) {
   if (!orderId) return;
   showLoading(true);
   try {
-    let success = false;
-    try {
-      const res = await fetch(`${API_BASE}/orders/${orderId}/confirm-payment`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      if (res.ok) success = true;
-    } catch (e) {
-      console.warn("Backend confirm-payment failed, trying direct Supabase:", e);
-    }
-
-    if (!success) {
-      const { data: orderData } = await supabase
-        .from('orders')
-        .select('qr_code_data')
-        .eq('id', orderId)
-        .single();
-
-      let currentQr = {};
-      if (orderData && orderData.qr_code_data) {
-        currentQr = typeof orderData.qr_code_data === 'string'
-          ? JSON.parse(orderData.qr_code_data)
-          : orderData.qr_code_data;
-      }
-
-      const { error } = await supabase
-        .from('orders')
-        .update({
-          payment_status: 'PAID',
-          qr_code_data: { ...currentQr, payment_status: 'PAID', paid_at: new Date().toISOString() }
-        })
-        .eq('id', orderId);
-
-      if (error) throw error;
-    }
+    const { error } = await supabase
+      .from('orders')
+      .update({ payment_status: 'PAID' })
+      .eq('id', orderId);
 
     showLoading(false);
-    showToast("✅ Payment Confirmed! Order marked as PAID and pushed to Kitchen Queue.", "success");
+    if (error) throw error;
+
+    showToast("Payment status confirmed: PAID!", "success");
     await fetchOrders();
-    renderSalesSummary();
     renderOrderQueue();
-    if (currentView === 'history') {
-      loadHistoryView();
-    }
+    await renderSalesSummary();
   } catch (err) {
     showLoading(false);
     console.error("Confirm payment error:", err);
-    showToast("Failed to confirm payment: " + err.message, "error");
+    showToast("Failed to confirm payment", "error");
   }
-}
-
-// Real-time Postgres subscriptions
-function setupRealtimeOrdersListener() {
-  if (activeOrdersChannel) {
-    supabase.removeChannel(activeOrdersChannel);
-    activeOrdersChannel = null;
-  }
-
-  activeOrdersChannel = supabase
-    .channel('orders_realtime_stream')
-    .on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'orders' },
-      async (payload) => {
-        console.log('[Manager Realtime] New order received (INSERT):', payload.new);
-        
-        // Play audio alert ping for new orders
-        playBeep('success');
-        
-        showToast(`🔔 New Order Received: ${payload.new?.token_number || 'Token'}!`, 'success');
-
-        await fetchOrders();
-        renderOrderQueue();
-        await updateTopLiveMetricCards();
-        if (currentView === 'sales') {
-          renderSalesSummary();
-        }
-        if (currentView === 'history') {
-          loadHistoryView();
-        }
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'orders' },
-      async (payload) => {
-        console.log('[Manager Realtime] Order updated (UPDATE):', payload.new);
-        const updated = payload.new;
-
-        const idx = orders.findIndex(o => o.id === updated.id);
-        if (idx !== -1) {
-          orders[idx] = { ...orders[idx], ...updated };
-        }
-
-        renderOrderQueue();
-        await updateTopLiveMetricCards();
-        if (currentView === 'sales') {
-          renderSalesSummary();
-        }
-        if (currentView === 'history') {
-          loadHistoryView();
-        }
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: 'DELETE', schema: 'public', table: 'orders' },
-      async (payload) => {
-        console.log('[Manager Realtime] Order deleted (DELETE):', payload.old);
-        orders = orders.filter(o => o.id !== payload.old?.id);
-        renderOrderQueue();
-        await updateTopLiveMetricCards();
-      }
-    )
-    .subscribe((status) => {
-      console.log('[Manager Realtime] Subscription status:', status);
-    });
-}
-
-// Window unload cleanup to prevent memory leaks
-window.addEventListener('beforeunload', () => {
-  if (activeOrdersChannel) {
-    supabase.removeChannel(activeOrdersChannel);
-    activeOrdersChannel = null;
-  }
-});
-
-function populateCategorySelect() {
-  ['new-prod-category', 'edit-prod-category'].forEach(id => {
-    const select = document.getElementById(id);
-    if (select) {
-      select.innerHTML = categories.map(c => `<option value="${c.id}">${c.icon_url || c.icon || '📦'} ${c.name}</option>`).join('');
-    }
-  });
-}
-
-function openAddItemModal() {
-  document.getElementById("add-item-modal").classList.remove("hidden");
-  populateCategorySelect();
-  if (selectedCategoryFilter && selectedCategoryFilter !== 'all') {
-    const catSelect = document.getElementById("new-prod-category");
-    if (catSelect) catSelect.value = selectedCategoryFilter;
-  }
-  lucide.createIcons();
-}
-
-function closeAddItemModal() {
-  document.getElementById("add-item-modal").classList.add("hidden");
-  document.getElementById("add-item-form").reset();
-}
-
-async function loadCategories() {
-  try {
-    const res = await fetch(`${API_BASE}/categories`);
-    const data = await res.json();
-    if (res.ok) {
-      categories = data || [];
-      populateCategorySelect();
-      renderCategoriesList();
-    }
-  } catch (err) {
-    console.error("loadCategories error:", err);
-  }
-}
-
-async function handleProductAdd(event) {
-  event.preventDefault();
-  const name = document.getElementById("new-prod-name").value.trim();
-  const catId = document.getElementById("new-prod-category").value;
-  const stock = parseInt(document.getElementById("new-prod-stock").value);
-  const price = parseFloat(document.getElementById("new-prod-price").value);
-  const fileInput = document.getElementById("new-prod-file");
-  const urlInput = document.getElementById("new-prod-image-url").value.trim();
-  const barcodeInput = document.getElementById("new-prod-barcode").value.trim();
-
-  showLoading(true);
-
-  // Determine image source
-  let imgUrl = 'https://images.unsplash.com/photo-1546273031-28b72a64353b?w=300';
-  if (urlInput) {
-    imgUrl = urlInput;
-  } else if (fileInput.files && fileInput.files[0]) {
-    const reader = new FileReader();
-    const filePromise = new Promise((resolve) => {
-      reader.onload = function(e) {
-        resolve(e.target.result);
-      };
-      reader.readAsDataURL(fileInput.files[0]);
-    });
-    imgUrl = await filePromise;
-  }
-
-  // Generate or use barcode ID format
-  const barcode = barcodeInput || ("BC-MAN-" + Math.floor(1000 + Math.random() * 9000));
-
-  try {
-    const res = await fetch(`${API_BASE}/products`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        category_id: catId,
-        price,
-        stock_quantity: stock,
-        image_url: imgUrl,
-        barcode_id: barcode
-      })
-    });
-    const data = await res.json();
-    showLoading(false);
-    
-    if (res.ok) {
-      showToast("Product item added successfully!", "success");
-      document.getElementById("add-item-form").reset();
-      closeAddItemModal();
-      await fetchProducts();
-      renderInventoryTable();
-    } else {
-      showToast(data.error || "Failed to save product", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error('Add product API error:', err);
-    showToast("Server connection error adding product", "error");
-  }
-}
-
-function openEditItemModal(prodId) {
-  populateCategorySelect();
-
-  const prod = products.find(p => p.id === prodId);
-  if (!prod) return;
-
-  document.getElementById("edit-prod-id").value = prod.id;
-  document.getElementById("edit-prod-name").value = prod.name;
-  document.getElementById("edit-prod-category").value = prod.category_id;
-  document.getElementById("edit-prod-stock").value = prod.stock_quantity;
-  document.getElementById("edit-prod-price").value = prod.price;
-  document.getElementById("edit-prod-image-url").value = prod.image_url || '';
-  const barcodeEl = document.getElementById("edit-prod-barcode");
-  if (barcodeEl) barcodeEl.value = prod.barcode_id || '';
-
-  document.getElementById("edit-item-modal").classList.remove("hidden");
-  lucide.createIcons();
-}
-
-function closeEditItemModal() {
-  document.getElementById("edit-item-modal").classList.add("hidden");
-  document.getElementById("edit-item-form").reset();
-}
-
-async function handleProductEdit(event) {
-  event.preventDefault();
-  const id = document.getElementById("edit-prod-id").value;
-  const name = document.getElementById("edit-prod-name").value.trim();
-  const category_id = document.getElementById("edit-prod-category").value;
-  const stock_quantity = parseInt(document.getElementById("edit-prod-stock").value);
-  const price = parseFloat(document.getElementById("edit-prod-price").value);
-  const image_url = document.getElementById("edit-prod-image-url").value.trim();
-  const barcode_id = document.getElementById("edit-prod-barcode") ? document.getElementById("edit-prod-barcode").value.trim() : null;
-
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/products/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        category_id,
-        price,
-        stock_quantity,
-        image_url,
-        barcode_id: barcode_id || null
-      })
-    });
-    const data = await res.json();
-    showLoading(false);
-
-    if (res.ok) {
-      showToast("Product updated successfully!", "success");
-      closeEditItemModal();
-      await fetchProducts();
-      renderInventoryTable();
-    } else {
-      showToast(data.error || "Failed to update product", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error('Update product API error:', err);
-    showToast("Server connection error updating product", "error");
-  }
-}
-
-async function deleteProduct(prodId) {
-  if (!confirm("Are you sure you want to delete this item?")) return;
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/products/${prodId}`, {
-      method: 'DELETE'
-    });
-    showLoading(false);
-
-    if (res.ok) {
-      products = products.filter(p => p.id !== prodId);
-      renderInventoryTable();
-      showToast("Product deleted successfully!", "success");
-      // Fetch fresh products to stay in sync
-      fetchProducts().then(() => renderInventoryTable());
-    } else {
-      const data = await res.json();
-      showToast(data.error || "Failed to delete product", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error('Delete product API error:', err);
-    showToast("Server connection error deleting product", "error");
-  }
-}
-
-// 10. Navigation Bar View Toggling & Clock & Themes
-
-function updateLiveClock() {
-  const clockEl = document.getElementById("live-clock");
-  if (!clockEl) return;
-  const now = new Date();
-  clockEl.innerText = now.toLocaleTimeString('en-US', { hour12: true });
-}
-
-// Sidebar Navigation Drawer Controls
-function openSidebarDrawer() {
-  const drawer = document.getElementById("sidebar-drawer");
-  const backdrop = document.getElementById("sidebar-backdrop");
-  if (drawer) {
-    drawer.classList.remove("-translate-x-full");
-    drawer.classList.add("translate-x-0");
-  }
-  if (backdrop) {
-    backdrop.classList.remove("opacity-0", "pointer-events-none");
-    backdrop.classList.add("opacity-100", "pointer-events-auto");
-  }
-}
-
-function closeSidebarDrawer() {
-  const drawer = document.getElementById("sidebar-drawer");
-  const backdrop = document.getElementById("sidebar-backdrop");
-  if (drawer) {
-    drawer.classList.remove("translate-x-0");
-    drawer.classList.add("-translate-x-full");
-  }
-  if (backdrop) {
-    backdrop.classList.remove("opacity-100", "pointer-events-auto");
-    backdrop.classList.add("opacity-0", "pointer-events-none");
-  }
-}
-
-function toggleSidebarDrawer() {
-  const drawer = document.getElementById("sidebar-drawer");
-  if (drawer && drawer.classList.contains("translate-x-0")) {
-    closeSidebarDrawer();
-  } else {
-    openSidebarDrawer();
-  }
-}
-
-function navigateToView(viewId) {
-  showManagerView(viewId);
-  closeSidebarDrawer();
-}
-
-function showManagerView(viewId) {
-  currentView = viewId;
-  const views = {
-    'dashboard':  'manager-dashboard-view',
-    'pos':        'pos-view',
-    'sales':      'sales-view',
-    'inventory':  'inventory-view',
-    'categories': 'categories-view',
-    'history':    'history-view',
-    'settings':   'settings-view',
-    'notice':     'notices-view'
-  };
-
-  // Hide all views
-  Object.values(views).forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.classList.add('hidden');
-  });
-
-  // Show active view
-  const activeEl = document.getElementById(views[viewId]);
-  if (activeEl) activeEl.classList.remove('hidden');
-
-  // Reset all nav buttons to inactive style
-  ['dashboard', 'pos', 'sales', 'inventory', 'categories', 'history', 'settings', 'notice'].forEach(name => {
-    const btn = document.getElementById(`nav-btn-${name}`);
-    if (btn) btn.className = 'w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-800 transition-all flex items-center gap-3 text-left';
-  });
-
-  // Highlight the active button
-  const activeBtn = document.getElementById(`nav-btn-${viewId}`);
-  if (activeBtn) activeBtn.className = 'w-full px-4 py-3 rounded-xl text-xs font-bold bg-primary text-slate-900 transition-all flex items-center gap-3 shadow-lg text-left';
-
-  // Specific data refreshes on view navigation
-  if (viewId === 'history') {
-    loadHistoryView();
-  } else if (viewId === 'sales') {
-    renderSalesSummary();
-  } else if (viewId === 'pos') {
-    renderPosCategories();
-    renderPosMenu();
-    renderPosCart();
-  } else if (viewId === 'inventory') {
-    renderInventoryTable();
-    renderCategoryFilters();
-  } else if (viewId === 'categories') {
-    renderCategoriesList();
-  } else if (viewId === 'dashboard') {
-    setTimeout(() => {
-      const scanner = document.getElementById('quickTokenScanner');
-      if (scanner) scanner.focus();
-    }, 100);
-  }
-
-  lucide.createIcons();
-}
-
-
-function setThemeMode(mode) {
-  localStorage.setItem("manager-theme", mode);
-  
-  // Clean classes
-  document.body.classList.remove("theme-dark", "theme-light", "theme-reading");
-  
-  // Set selected
-  if (mode === "light") {
-    document.body.classList.add("theme-light");
-  } else if (mode === "reading") {
-    document.body.classList.add("theme-reading");
-  } else {
-    document.body.classList.add("theme-dark");
-  }
-
-  // Update button visual styles
-  const btnDark = document.getElementById("theme-btn-dark");
-  const btnLight = document.getElementById("theme-btn-light");
-  const btnReading = document.getElementById("theme-btn-reading");
-
-  [btnDark, btnLight, btnReading].forEach(btn => {
-    if (btn) {
-      btn.classList.remove("border-primary", "text-primary");
-      btn.classList.add("border-slate-800", "text-slate-300");
-    }
-  });
-
-  const activeBtn = document.getElementById(`theme-btn-${mode}`);
-  if (activeBtn) {
-    activeBtn.classList.remove("border-slate-800", "text-slate-300");
-    activeBtn.classList.add("border-primary", "text-primary");
-  }
-}
-
-// 11. Category Management CRUD
-async function handleCategorySubmit(event) {
-  event.preventDefault();
-  const name = document.getElementById("category-name-input").value.trim();
-  const icon = document.getElementById("category-icon-input").value.trim();
-  const editId = document.getElementById("edit-category-id").value;
-
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/categories`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: editId || undefined, name, icon })
-    });
-    const data = await res.json();
-    showLoading(false);
-
-    if (res.ok) {
-      showToast(editId ? "Category updated successfully!" : "Category added successfully!", "success");
-      document.getElementById("category-name-input").value = "";
-      document.getElementById("category-icon-input").value = "";
-      document.getElementById("edit-category-id").value = "";
-      document.getElementById("category-form-title").innerText = "Add New Category";
-      const cancelBtn = document.getElementById("category-cancel-btn");
-      if (cancelBtn) cancelBtn.classList.add("hidden");
-      await fetchCategories();
-      renderCategoriesList();
-      populateCategorySelect();
-      renderCategoryFilters();
-      await fetchProducts();
-      renderInventoryTable();
-    } else {
-      showToast(data.error || "Error saving category", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error("Category save API error:", err);
-    showToast("Server connection error saving category", "error");
-  }
-}
-
-function startEditCategory(id, name, icon) {
-  document.getElementById("edit-category-id").value = id;
-  document.getElementById("category-name-input").value = name;
-  document.getElementById("category-icon-input").value = icon;
-  document.getElementById("category-form-title").innerText = "Edit Category";
-  document.getElementById("category-cancel-btn").classList.remove("hidden");
-}
-
-function cancelCategoryEdit() {
-  document.getElementById("category-form").reset();
-  document.getElementById("edit-category-id").value = "";
-  document.getElementById("category-form-title").innerText = "Add New Category";
-  document.getElementById("category-cancel-btn").classList.add("hidden");
-}
-
-async function deleteCategory(id) {
-  if (!confirm("Are you sure you want to delete this category? All products under it will also be deleted.")) return;
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/categories/${id}`, {
-      method: 'DELETE'
-    });
-    const data = await res.json();
-    showLoading(false);
-
-    if (res.ok) {
-      showToast("Category deleted successfully!", "success");
-      await fetchCategories();
-      renderCategoriesList();
-      populateCategorySelect();
-      renderCategoryFilters();
-      await fetchProducts();
-      renderInventoryTable();
-    } else {
-      showToast(data.error || "Failed to delete category", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error("Delete category API error:", err);
-    showToast("Server connection error deleting category", "error");
-  }
-}
-
-function renderCategoriesList() {
-  const tbody = document.getElementById("category-list-body");
-  if (!tbody) return;
-
-  if (!categories || categories.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-slate-500 font-semibold">No categories found. Use the form on the left to add one.</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = categories.map(c => {
-    const itemCount = (products || []).filter(p => p.category_id === c.id).length;
-    return `
-      <tr class="border-b border-slate-800/40 hover:bg-slate-800/20 transition-colors">
-        <td class="py-3 pr-2 font-semibold text-xl text-slate-200">${c.icon_url || c.icon || '📦'}</td>
-        <td class="py-3 pr-4 font-bold text-slate-100">${c.name}</td>
-        <td class="py-3 pr-4 text-center">
-          <span class="bg-primary/10 text-primary border border-primary/20 text-[10px] font-bold px-2.5 py-1 rounded-full whitespace-nowrap">
-            ${itemCount} ${itemCount === 1 ? 'item' : 'items'}
-          </span>
-        </td>
-        <td class="py-3 text-right whitespace-nowrap">
-          <button onclick="startEditCategory('${c.id}', '${c.name}', '${c.icon_url || c.icon || ''}')" class="text-xs bg-slate-900 border border-slate-800 text-primary hover:bg-primary hover:text-slate-900 font-bold px-2.5 py-1 rounded-lg transition-all mr-1.5 shadow-sm">
-            Edit
-          </button>
-          <button onclick="deleteCategory('${c.id}')" class="text-xs bg-slate-900 border border-slate-800 text-rose-400 hover:bg-rose-500 hover:text-white font-bold px-2.5 py-1 rounded-lg transition-all shadow-sm">
-            Delete
-          </button>
-        </td>
-      </tr>
-    `;
-  }).join('');
-  lucide.createIcons();
-}
-
-// 12. Post Notice Broadcast logic
-async function handlePostNotice(event) {
-  event.preventDefault();
-  const title = document.getElementById("notice-title-input").value.trim();
-  const message = document.getElementById("notice-message-input").value.trim();
-
-  showLoading(true);
-  try {
-    const res = await fetch(`${API_BASE}/notices`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, message })
-    });
-    const data = await res.json();
-    showLoading(false);
-
-    if (res.ok) {
-      showToast("Notice broadcasted successfully!", "success");
-      document.getElementById("post-notice-form").reset();
-      showManagerView('dashboard');
-    } else {
-      showToast(data.error || "Broadcast failed", "error");
-    }
-  } catch (err) {
-    showLoading(false);
-    console.error("Post notice API error:", err);
-    showToast("Server connection error broadcasting notice", "error");
-  }
-}
-
-// 13. Screen ④: Scanner & Dispensation Details
-let currentScannerMode = 'camera'; // 'camera' or 'upload'
-
-async function stopActiveScanner() {
-  if (html5QrCode) {
-    try {
-      if (html5QrCode.isScanning) {
-        await html5QrCode.stop();
-      }
-    } catch (e) {
-      console.warn("Scanner stop error:", e);
-    }
-    try {
-      await html5QrCode.clear();
-    } catch (e) {
-      console.warn("Scanner clear error:", e);
-    }
-    html5QrCode = null;
-  }
-}
-
-async function switchScannerTab(mode) {
-  currentScannerMode = mode;
-  const cameraTabBtn = document.getElementById("scanner-tab-camera");
-  const uploadTabBtn = document.getElementById("scanner-tab-upload");
-  const cameraView = document.getElementById("scanner-camera-view");
-  const uploadView = document.getElementById("scanner-upload-view");
-
-  if (mode === 'camera') {
-    if (cameraTabBtn) {
-      cameraTabBtn.className = "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold bg-primary text-slate-900 transition-all shadow";
-    }
-    if (uploadTabBtn) {
-      uploadTabBtn.className = "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition-all";
-    }
-    if (cameraView) cameraView.classList.remove("hidden");
-    if (uploadView) uploadView.classList.add("hidden");
-
-    await startCameraFeed();
-  } else {
-    if (uploadTabBtn) {
-      uploadTabBtn.className = "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold bg-primary text-slate-900 transition-all shadow";
-    }
-    if (cameraTabBtn) {
-      cameraTabBtn.className = "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition-all";
-    }
-    if (cameraView) cameraView.classList.add("hidden");
-    if (uploadView) uploadView.classList.remove("hidden");
-
-    // Immediately stop live camera stream to release device hardware
-    await stopActiveScanner();
-  }
-  lucide.createIcons();
-}
-
-async function startCameraFeed() {
-  const modal = document.getElementById("scanner-modal");
-  const readerContainer = document.getElementById("qr-reader");
-
-  // Render clean loading placeholder inside viewfinder
-  if (readerContainer) {
-    readerContainer.innerHTML = `
-      <div id="camera-loading-box" class="w-full h-full flex flex-col items-center justify-center gap-3 text-slate-400 bg-slate-900">
-        <div class="w-9 h-9 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
-        <p class="text-xs font-semibold text-slate-300">Initializing camera...</p>
-      </div>
-    `;
-  }
-
-  // Stop any existing camera instance
-  await stopActiveScanner();
-
-  // Defer camera startup to allow browser paint/layout cycle
-  setTimeout(async () => {
-    // If modal was closed or tab was switched to upload during timeout, exit cleanly
-    if (!modal || modal.classList.contains("hidden") || currentScannerMode !== 'camera') return;
-
-    try {
-      if (typeof Html5Qrcode === "undefined") {
-        throw new Error("Html5Qrcode library is not loaded.");
-      }
-
-      html5QrCode = new Html5Qrcode("qr-reader");
-
-      const qrConfig = {
-        fps: 15,
-        qrbox: (viewfinderWidth, viewfinderHeight) => {
-          const minDim = Math.min(viewfinderWidth, viewfinderHeight);
-          const size = Math.floor(minDim * 0.75);
-          return { width: Math.max(180, size), height: Math.max(180, size) };
-        },
-        aspectRatio: 1.0
-      };
-
-      // Try environment / back camera first; if not available, fallback to default camera
-      try {
-        await html5QrCode.start(
-          { facingMode: "environment" },
-          qrConfig,
-          onScanSuccess,
-          onScanError
-        );
-      } catch (backCamErr) {
-        console.warn("Back camera unavailable, trying default camera:", backCamErr);
-        await html5QrCode.start(
-          true,
-          qrConfig,
-          onScanSuccess,
-          onScanError
-        );
-      }
-
-      // Remove loading indicator once camera stream is active
-      const loader = document.getElementById("camera-loading-box");
-      if (loader) loader.remove();
-
-    } catch (err) {
-      console.error("Camera startup failed:", err);
-      if (readerContainer) {
-        const isPermission = err.name === 'NotAllowedError' || (err.message && err.message.toLowerCase().includes('permission'));
-        readerContainer.innerHTML = `
-          <div class="w-full h-full flex flex-col items-center justify-center p-6 text-center gap-3 text-slate-400 bg-slate-900">
-            <i data-lucide="camera-off" class="w-10 h-10 text-rose-400"></i>
-            <p class="text-xs font-bold text-slate-200">Unable to access camera</p>
-            <p class="text-[10px] text-slate-400 max-w-[220px]">
-              ${isPermission ? 'Camera permission was denied. Please allow camera access in your browser settings.' : 'Camera is unavailable or in use by another application.'}
-            </p>
-            <button onclick="startCameraFeed()" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-primary font-bold rounded-lg text-xs transition-all flex items-center gap-1.5 mt-1">
-              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Retry Camera
-            </button>
-          </div>
-        `;
-        lucide.createIcons();
-      }
-      showToast("Camera access failed. Check browser permissions or use Upload tab.", "error");
-    }
-  }, 100);
-}
-
-async function openScannerModal(target = 'order') {
-  currentScannerTarget = target;
-  const modal = document.getElementById("scanner-modal");
-  const titleEl = document.getElementById("scanner-modal-title");
-  const manualSection = document.getElementById("scanner-manual-section");
-
-  if (titleEl) {
-    if (target.startsWith('product')) {
-      titleEl.innerText = "Scan Product Barcode";
-    } else {
-      titleEl.innerText = "Scan Student QR Code";
-    }
-  }
-
-  // Context-aware footer: Show manual token input for order verification; hide for inventory/product scanning
-  if (manualSection) {
-    if (target.startsWith('product')) {
-      manualSection.classList.add('hidden');
-    } else {
-      manualSection.classList.remove('hidden');
-    }
-  }
-
-  // Reset manual input
-  const manualInput = document.getElementById("scanner-manual-input");
-  if (manualInput) manualInput.value = '';
-
-  // 1. Unhide modal in the DOM first so dimensions are non-zero
-  modal.classList.remove("hidden");
-
-  // 2. Default to Live Camera tab
-  await switchScannerTab('camera');
-}
-
-// 14. Image File Upload & Drop Scanning Logic
-async function handleQrFileUpload(event) {
-  const file = event.target.files && event.target.files[0];
-  if (!file) return;
-  await processUploadedQrImage(file);
-}
-
-async function handleQrFileDrop(event) {
-  event.preventDefault();
-  const dropzone = document.getElementById("scanner-upload-view");
-  if (dropzone) dropzone.classList.remove('border-primary');
-
-  const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
-  if (!file) return;
-  await processUploadedQrImage(file);
-}
-
-async function processUploadedQrImage(file) {
-  if (!file.type.startsWith('image/')) {
-    showToast("Please upload a valid image file (PNG, JPG, WebP).", "error");
-    return;
-  }
-
-  showToast("🔍 Processing image for QR / Barcode...", "success");
-  showLoading(true);
-
-  let scannerInstance = null;
-  try {
-    // Ensure any live camera is stopped
-    await stopActiveScanner();
-
-    scannerInstance = new Html5Qrcode("qr-reader");
-    const decodedText = await scannerInstance.scanFile(file, true);
-
-    showLoading(false);
-    try {
-      await scannerInstance.clear();
-    } catch (e) {}
-
-    await onScanSuccess(decodedText);
-
-  } catch (err) {
-    showLoading(false);
-    console.warn("File QR decode error:", err);
-    try {
-      if (scannerInstance) await scannerInstance.clear();
-    } catch (e) {}
-    
-    showToast("No valid QR / Barcode found in this image. Please try another photo.", "error");
-    
-    const fileInput = document.getElementById("qr-file-input");
-    if (fileInput) fileInput.value = '';
-  }
-}
-
-// 15. Manual and Scan order lookup logic
-async function closeScannerModal() {
-  const modal = document.getElementById("scanner-modal");
-  if (modal) modal.classList.add("hidden");
-  await stopActiveScanner();
-  const readerContainer = document.getElementById("qr-reader");
-  if (readerContainer) readerContainer.innerHTML = '';
-  const fileInput = document.getElementById("qr-file-input");
-  if (fileInput) fileInput.value = '';
-}
-
-async function onScanSuccess(decodedText) {
-  const target = currentScannerTarget;
-  await closeScannerModal();
-  // Route strictly to inventory if scanner was opened for product operations
-  if (target && target.startsWith('product')) {
-    await handleInventoryScan(decodedText, target);
-  } else {
-    await handleScan(decodedText);
-  }
-}
-
-function onScanError(e) {
-  // Silent frame-by-frame decode failure
-}
-
-// ======================================================
-// DUAL-MODE SCANNING ENGINE
-// ======================================================
-
-/**
- * Unified scan dispatcher. Called by hardware wedge (Enter key) AND webcam.
- * Parses the raw data, routes to order verification or inventory handling.
- */
-async function handleScan(rawData) {
-  const cleaned = (rawData || '').trim();
-  if (!cleaned) return;
-
-  // Check if Add or Edit modal is currently active
-  const addModalEl = document.getElementById('add-item-modal');
-  const editModalEl = document.getElementById('edit-item-modal');
-  const isAddModalOpen = addModalEl && !addModalEl.classList.contains('hidden');
-  const isEditModalOpen = editModalEl && !editModalEl.classList.contains('hidden');
-
-  // If user is currently on POS view, check if scanned string matches a product barcode
-  if (currentView === 'pos') {
-    const cleanLower = cleaned.toLowerCase();
-    const posMatch = products.find(p =>
-      (p.barcode_id && p.barcode_id.toLowerCase() === cleanLower) ||
-      p.id === cleaned
-    );
-    if (posMatch) {
-      showToast(`⚡ POS Scanned: ${posMatch.name}`, 'success');
-      addToPosCart(posMatch.id);
-      return;
-    }
-  }
-
-  let parsed = null;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch (e) {
-    // Not JSON — treat as plain token/barcode/uuid string
-  }
-
-  // 1. Explicit JSON routing
-  if (parsed && typeof parsed === 'object') {
-    // JSON with barcode_id or product_id → strictly route to inventory
-    if (parsed.barcode_id || parsed.product_id) {
-      showToast('🔍 Scanning Barcode...', 'success');
-      await handleInventoryScan(parsed.barcode_id || parsed.product_id);
-      return;
-    }
-
-    const orderId = parsed.order_id || parsed.orderId || parsed.id || null;
-    const token = parsed.token_number || parsed.token || null;
-
-    if (orderId || token) {
-      // If user is in Inventory Scan Mode or has Add/Edit modal open, handle as inventory barcode
-      if (inventoryScanModeActive || isAddModalOpen || isEditModalOpen) {
-        showToast('🔍 Scanning Barcode...', 'success');
-        await handleInventoryScan(parsed.barcode_id || parsed.order_id || parsed.token || cleaned);
-        return;
-      }
-      showToast('🔍 Verifying Order...', 'success');
-      await verifyOrderLookup(orderId || token, token);
-      return;
-    }
-  }
-
-  // 2. Direct inventory contexts: Scan Mode active OR Add/Edit Item modal open
-  if (inventoryScanModeActive || isAddModalOpen || isEditModalOpen) {
-    showToast('🔍 Scanning Barcode...', 'success');
-    await handleInventoryScan(cleaned);
-    return;
-  }
-
-  // 3. Check if scanned string matches a product barcode in inventory
-  const cleanLower = cleaned.toLowerCase();
-  const productMatch = products.find(p =>
-    (p.barcode_id && p.barcode_id.toLowerCase() === cleanLower) ||
-    p.id === cleaned
-  );
-
-  if (productMatch || cleaned.startsWith('BC-') || cleaned.startsWith('BARCODE-') || cleaned.startsWith('PROD-')) {
-    showToast('🔍 Scanning Barcode...', 'success');
-    await handleInventoryScan(cleaned);
-    return;
-  }
-
-  // 4. Default: Hardware/QR scanner locates order and automatically triggers Order Verification modal
-  showToast('🔍 Verifying Order...', 'success');
-  await verifyOrderLookup(cleaned);
-}
-
-/**
- * Inventory scan mode handler.
- * Looks up a product by barcode_id; if found → opens edit modal,
- * if not found → pre-fills barcode in the Add Item modal.
- */
-async function handleInventoryScan(rawBarcode, targetHint = null) {
-  const cleanBarcode = (rawBarcode || '').trim().replace(/^['"]|['"]$/g, '');
-  if (!cleanBarcode) return;
-
-  // Make sure products list is up to date
-  if (!products || products.length === 0) {
-    await fetchProducts();
-  }
-
-  // If user clicked camera icon specifically inside the Edit modal to update barcode
-  if (targetHint === 'product_edit_prefill') {
-    const editBarcodeInput = document.getElementById("edit-prod-barcode");
-    if (editBarcodeInput) editBarcodeInput.value = cleanBarcode;
-    showToast(`Barcode ${cleanBarcode} filled in edit form`, 'success');
-    return;
-  }
-
-  // Find if matching product already exists (by barcode_id or id)
-  const match = products.find(p =>
-    (p.barcode_id && p.barcode_id.toLowerCase() === cleanBarcode.toLowerCase()) ||
-    p.id === cleanBarcode
-  );
-
-  if (match) {
-    showToast(`📦 Item Found: ${match.name} (₹${match.price.toFixed(2)})`, 'success');
-    closeAddItemModal();
-    openEditItemModal(match.id);
-  } else {
-    showToast(`🔍 New barcode: ${cleanBarcode} — Enter details to add new item`, 'success');
-    closeEditItemModal();
-    openAddItemModal();
-    const barcodeInput = document.getElementById('new-prod-barcode');
-    if (barcodeInput) barcodeInput.value = cleanBarcode;
-
-    // Reset price for manager input
-    const priceInput = document.getElementById('new-prod-price');
-    if (priceInput) priceInput.value = '';
-
-    const nameInput = document.getElementById('new-prod-name');
-    const urlInput = document.getElementById('new-prod-image-url');
-    if (nameInput) {
-      nameInput.value = '';
-      nameInput.placeholder = 'Fetching product name...';
-    }
-
-    // Auto-fetch product name from Open Food Facts API
-    try {
-      fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(cleanBarcode)}.json`)
-        .then(res => res.ok ? res.json() : null)
-        .then(data => {
-          if (data && data.product) {
-            const fetchedName = data.product.product_name ||
-                                data.product.product_name_en ||
-                                data.product.generic_name ||
-                                data.product.brands || '';
-            if (fetchedName && nameInput && (!nameInput.value || nameInput.value === '')) {
-              nameInput.value = fetchedName;
-              showToast(`✨ Auto-detected: ${fetchedName}`, 'success');
-            }
-            if (urlInput && !urlInput.value) {
-              const fetchedImg = data.product.image_url || data.product.image_front_url || '';
-              if (fetchedImg) urlInput.value = fetchedImg;
-            }
-          }
-        })
-        .catch(() => {
-          // Graceful fallback for network or lookup errors
-        })
-        .finally(() => {
-          if (nameInput) {
-            nameInput.placeholder = 'e.g. Samosa';
-            nameInput.focus();
-          }
-        });
-    } catch (e) {
-      if (nameInput) {
-        nameInput.placeholder = 'e.g. Samosa';
-        nameInput.focus();
-      }
-    }
-  }
-}
-
-/**
- * Toggle Inventory Scan Mode on/off.
- * When active, all hardware wedge / camera scans route to handleInventoryScan().
- */
-function toggleInventoryScanMode() {
-  inventoryScanModeActive = !inventoryScanModeActive;
-
-  const btn = document.getElementById('inventory-scan-mode-btn');
-  const banner = document.getElementById('inventory-scan-mode-banner');
-
-  if (inventoryScanModeActive) {
-    showToast('📡 Inventory Scan Mode: ON — scan any product barcode', 'success');
-    if (btn) {
-      btn.innerHTML = `<i data-lucide="scan-line" class="w-3.5 h-3.5"></i> Scan Mode: ON`;
-      btn.classList.remove('bg-slate-900', 'text-slate-300', 'border-slate-700');
-      btn.classList.add('bg-primary/20', 'text-primary', 'border-primary/40');
-    }
-    if (banner) banner.classList.remove('hidden');
-  } else {
-    showToast('Inventory Scan Mode: OFF', 'success');
-    if (btn) {
-      btn.innerHTML = `<i data-lucide="scan-line" class="w-3.5 h-3.5"></i> Scan Mode: OFF`;
-      btn.classList.add('bg-slate-900', 'text-slate-300', 'border-slate-700');
-      btn.classList.remove('bg-primary/20', 'text-primary', 'border-primary/40');
-    }
-    if (banner) banner.classList.add('hidden');
-  }
-  lucide.createIcons();
-}
-
-/**
- * Robust order lookup by UUID ID or Token Number.
- * Queries /api/orders/:id and populates Order Details Modal.
- */
-async function verifyOrderLookup(identifier, secondaryIdentifier = null) {
-  if (!identifier) {
-    showLoading(false);
-    showToast("Invalid QR code: No order identifier found.", "error");
-    return;
-  }
-
-  const cleanId = String(identifier).trim().replace(/^['"]|['"]$/g, '');
-  if (!cleanId) {
-    showLoading(false);
-    showToast("Empty or invalid order identifier.", "error");
-    return;
-  }
-
-  showLoading(true);
-
-  try {
-    // 1. Try primary lookup via GET /api/orders/:id
-    let res = await fetch(`${API_BASE}/orders/${encodeURIComponent(cleanId)}`);
-    let data = null;
-
-    if (res.ok) {
-      data = await res.json();
-    } else if (secondaryIdentifier) {
-      // 2. If primary failed, try secondary identifier (e.g. token_number)
-      const cleanSec = String(secondaryIdentifier).trim().replace(/^['"]|['"]$/g, '');
-      if (cleanSec && cleanSec !== cleanId) {
-        const secRes = await fetch(`${API_BASE}/orders/${encodeURIComponent(cleanSec)}`);
-        if (secRes.ok) {
-          data = await secRes.json();
-        }
-      }
-    }
-
-    // 3. Fallback: try querying /api/orders?token_number=...
-    if (!data) {
-      const tokenQueryRes = await fetch(`${API_BASE}/orders?token_number=${encodeURIComponent(cleanId)}`);
-      if (tokenQueryRes.ok) {
-        const tokenData = await tokenQueryRes.json();
-        if (tokenData && (tokenData.id || tokenData.token_number)) {
-          data = tokenData;
-        }
-      }
-    }
-
-    showLoading(false);
-
-    if (!data || (!data.id && !data.token_number)) {
-      showToast("Order not found or already completed.", "error");
-      return;
-    }
-
-    // Check if the order is expired (30-minute cash window passed or marked cancelled)
-    const isCash = data.payment_method === 'CASH_AT_COUNTER';
-    const isPaid = data.payment_status === 'PAID' || data.payment_method === 'ONLINE';
-    const orderCreatedAt = data.created_at ? new Date(data.created_at).getTime() : Date.now();
-    const isPast30Min = (Date.now() - orderCreatedAt) > (30 * 60 * 1000);
-    const isExpired = data.order_status === 'CANCELLED' || (!isPaid && isCash && isPast30Min);
-
-    if (isExpired) {
-      showToast("Order Expired: 30-minute cash payment window passed.", "error");
-      await closeScannerModal();
-      return;
-    }
-
-    // Normalize order items
-    const rawItems = data.order_items || data.items || [];
-    const itemsList = rawItems.map(oi => ({
-      name: oi.products ? oi.products.name : (oi.name || 'Canteen Item'),
-      quantity: parseInt(oi.quantity) || 1,
-      unit_price: parseFloat(oi.unit_price || (oi.products ? oi.products.price : 0) || 0)
-    }));
-
-    // Normalize student profile
-    const studentInfo = data.students || data.student || {
-      name: data.student_name || 'Student',
-      reg_no: data.student_reg || 'N/A',
-      department: data.student_dept || ''
-    };
-
-    const normalizedOrder = {
-      ...data,
-      id: data.id,
-      token_number: data.token_number || data.token || cleanId,
-      total_amount: parseFloat(data.total_amount || 0),
-      payment_method: data.payment_method || 'ONLINE',
-      payment_status: data.payment_status || 'PAID',
-      order_status: data.order_status || 'PENDING_PICKUP',
-      students: studentInfo,
-      items: itemsList
-    };
-
-    showToast(`✅ Order Verified: ${normalizedOrder.token_number}`, "success");
-    await closeScannerModal();
-    openOrderDetailModal(normalizedOrder);
-
-  } catch (err) {
-    showLoading(false);
-    console.error("verifyOrderLookup exception:", err);
-    showToast("Order not found or already completed.", "error");
-  }
-}
-
-// Backward compatibility helpers
-async function verifyOrderById(orderId) {
-  return verifyOrderLookup(orderId);
-}
-
-async function verifyAndOpenDispensation(tokenInput) {
-  return verifyOrderLookup(tokenInput);
-}
-
-function handleManualTokenSubmit() {
-  const token = document.getElementById("scanner-manual-input").value.trim().toUpperCase();
-  if (!token) return;
-  closeScannerModal();
-  executeQuickVerify(token);
 }
 
 function openOrderDetailModal(order) {
@@ -2287,29 +740,25 @@ function openOrderDetailModal(order) {
 
 async function deliverOrderDirectly(orderId) {
   if (!orderId || orderId === "undefined") {
-    console.error("Delivery API prevented: orderId is undefined.");
     showToast("Invalid order ID provided", "error");
     return;
   }
   showLoading(true);
   try {
-    const res = await fetch(`${API_BASE}/orders/${orderId}/deliver`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' }
-    });
-    const data = await res.json();
-    showLoading(false);
+    const { error } = await supabase
+      .from('orders')
+      .update({ order_status: 'DELIVERED', payment_status: 'PAID' })
+      .eq('id', orderId);
 
-    if (res.ok) {
-      showToast("Order status updated: Status : Deliver!", "success");
-      await initDashboard();
-    } else {
-      showToast(data.error || "Failed to deliver order", "error");
-    }
+    showLoading(false);
+    if (error) throw error;
+
+    showToast("Order status updated: DELIVERED!", "success");
+    await initDashboard();
   } catch (err) {
     showLoading(false);
-    console.error("Deliver order API error:", err);
-    showToast("Server connection error delivering order", "error");
+    console.error("Deliver order error:", err);
+    showToast("Error delivering order: " + err.message, "error");
   }
 }
 
@@ -2459,23 +908,29 @@ async function loadHistoryView() {
   if (rangeLabel) rangeLabel.innerText = labelText;
 
   try {
-    const params = new URLSearchParams();
-    if (startIso && endIso) {
-      params.set('start_date', startIso);
-      params.set('end_date', endIso);
-    }
-    if (statusVal && statusVal !== 'ALL') {
-      params.set('status', statusVal);
-    }
+    const { data, error } = await supabase
+      .from('orders')
+      .select(`
+        *,
+        students (
+          name,
+          reg_no,
+          department
+        ),
+        order_items (
+          *,
+          products (
+            id,
+            name,
+            price,
+            stock_quantity,
+            image_url
+          )
+        )
+      `)
+      .order('created_at', { ascending: false });
 
-    const queryString = params.toString();
-    const url = queryString
-      ? `${API_BASE}/manager/orders/history?${queryString}`
-      : `${API_BASE}/manager/orders/history`;
-
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
-    const { orders: data, summary } = await res.json();
+    if (error) throw error;
 
     historyOrders = (data || []).map(o => {
       let isPos = false;
@@ -2993,39 +1448,8 @@ async function handlePosCheckout(paymentMode) {
     let orderSuccess = false;
     let finalOrderData = null;
 
-    // 1. Primary: Call backend Express endpoint /api/pos/sale
-    try {
-      const res = await fetch(`${API_BASE}/pos/sale`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: items,
-          payment_mode: mode,
-          total_amount: totalAmount
-        })
-      });
-
-      const data = await res.json();
-      if (res.ok) {
-        orderSuccess = true;
-        finalOrderData = data.order;
-      } else {
-        // If it was a stock validation error from server, abort and show error
-        if (data.error && (data.error.includes('stock') || data.error.includes('Stock') || data.error.includes('Insufficient'))) {
-          showLoading(false);
-          showToast(data.error, 'error');
-          await fetchProducts();
-          renderPosMenu();
-          return;
-        }
-        console.warn('Backend /api/pos/sale returned error, attempting direct Supabase fallback:', data.error);
-      }
-    } catch (apiErr) {
-      console.warn('Backend API unreachable, using direct Supabase fallback:', apiErr);
-    }
-
-    // 2. Resilient Fallback: Direct Supabase atomic checkout if backend API was unavailable
-    if (!orderSuccess) {
+    // Direct Supabase atomic checkout
+    if (true) {
       // 2a. Validate current stock directly in Supabase
       const productIds = items.map(it => it.product_id);
       const { data: dbProds, error: pErr } = await supabase
