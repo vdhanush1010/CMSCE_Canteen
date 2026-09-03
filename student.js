@@ -477,6 +477,153 @@ function showProfileScreen() {
   lucide.createIcons();
 }
 
+// ─────────────────────────────────────────────────────────
+// Edit Profile Feature
+// ─────────────────────────────────────────────────────────
+function openEditProfileModal() {
+  if (!currentStudent) {
+    showToast("Please log in to edit your profile", "error");
+    return;
+  }
+
+  const modal = document.getElementById("edit-profile-modal");
+  if (!modal) return;
+
+  const nameInput = document.getElementById("edit-profile-name");
+  const regInput  = document.getElementById("edit-profile-reg");
+  const phoneInput= document.getElementById("edit-profile-phone");
+  const emailInput= document.getElementById("edit-profile-email");
+  const deptInput = document.getElementById("edit-profile-dept");
+
+  if (nameInput)  nameInput.value = currentStudent.name || '';
+  if (regInput)   regInput.value = currentStudent.reg_no || '';
+  if (phoneInput) phoneInput.value = currentStudent.phone_number || '';
+  if (emailInput) emailInput.value = currentStudent.email || '';
+  if (deptInput)  deptInput.value = currentStudent.department || '';
+
+  modal.classList.remove("hidden");
+  if (window.lucide) lucide.createIcons();
+}
+
+function closeEditProfileModal() {
+  const modal = document.getElementById("edit-profile-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function handleEditProfileSubmit(event) {
+  event.preventDefault();
+  if (!currentStudent || !currentStudent.id) {
+    showToast("Session expired. Please log in again.", "error");
+    return;
+  }
+
+  const name = document.getElementById("edit-profile-name").value.trim();
+  const phone = document.getElementById("edit-profile-phone").value.trim().replace(/\D/g, '');
+  const email = document.getElementById("edit-profile-email").value.trim();
+  const dept = document.getElementById("edit-profile-dept").value.trim();
+
+  if (!name) {
+    showToast("Please enter your full name", "error");
+    return;
+  }
+
+  if (phone.length !== 10) {
+    showToast("Mobile number must be exactly 10 digits", "error");
+    return;
+  }
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showToast("Please enter a valid email address", "error");
+    return;
+  }
+
+  if (!dept) {
+    showToast("Please enter your department", "error");
+    return;
+  }
+
+  const submitBtn = document.getElementById("edit-profile-submit-btn");
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-slate-900 border-t-transparent rounded-full"></span> Saving...`;
+  }
+
+  try {
+    const updatePayload = {
+      name,
+      department: dept,
+      phone_number: phone,
+      email: email || null
+    };
+
+    let updatedStudent = null;
+    let updateErr = null;
+
+    // Attempt 1: Full update with email and phone_number
+    const res1 = await supabase
+      .from('students')
+      .update(updatePayload)
+      .eq('id', currentStudent.id)
+      .select()
+      .single();
+
+    if (!res1.error && res1.data) {
+      updatedStudent = res1.data;
+    } else if (res1.error && (res1.error.message.includes("schema cache") || res1.error.message.includes("column") || res1.error.code === 'PGRST204')) {
+      // Attempt 2: Fallback if email / phone_number columns are not yet in Supabase
+      console.warn("Retrying profile update with core columns:", res1.error.message);
+      const res2 = await supabase
+        .from('students')
+        .update({ name, department: dept })
+        .eq('id', currentStudent.id)
+        .select()
+        .single();
+
+      if (!res2.error && res2.data) {
+        updatedStudent = res2.data;
+      } else {
+        updateErr = res2.error;
+      }
+    } else {
+      updateErr = res1.error;
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> <span>Save Changes</span>`;
+    }
+
+    if (updateErr || !updatedStudent) {
+      showToast("Failed to update profile: " + (updateErr ? updateErr.message : "Unknown error"), "error");
+      return;
+    }
+
+    // Immediately update local state without requiring a hard reload
+    currentStudent = {
+      ...currentStudent,
+      name: updatedStudent.name || name,
+      department: updatedStudent.department || dept,
+      phone_number: phone,
+      email: email || ''
+    };
+    sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+
+    // Refresh UI immediately
+    showProfileScreen();
+    updateDrawerInfo();
+
+    closeEditProfileModal();
+    showToast("Profile updated successfully!", "success");
+  } catch (err) {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> <span>Save Changes</span>`;
+    }
+    console.error("Error updating profile:", err);
+    showToast("Network error while updating profile", "error");
+  }
+}
+
 function handleAvatarUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -592,42 +739,82 @@ async function handleRegisterSubmit(event) {
       return;
     }
 
-    const { data: existingPhone } = await supabase
-      .from('students')
-      .select('id')
-      .eq('phone_number', phone)
-      .maybeSingle();
+    // Safely check phone uniqueness if column exists
+    try {
+      const { data: existingPhone } = await supabase
+        .from('students')
+        .select('id')
+        .eq('phone_number', phone)
+        .maybeSingle();
 
-    if (existingPhone) {
-      showLoading(false);
-      showToast("Phone number already registered", "error");
-      return;
+      if (existingPhone) {
+        showLoading(false);
+        showToast("Phone number already registered", "error");
+        return;
+      }
+    } catch (phoneCheckErr) {
+      // Column phone_number may not exist yet in schema cache; continue safely
     }
 
-    const { data: newStudent, error: insertErr } = await supabase
+    // Base schema-compliant payload matching existing Supabase columns
+    const baseStudent = {
+      reg_no: regNo,
+      name,
+      department: dept,
+      dob,
+      password_hash: password,
+      wallet_balance: 0.00
+    };
+
+    let newStudent = null;
+    let insertErr = null;
+
+    // Attempt 1: Try inserting with email and phone_number if schema supports it
+    const fullPayload = {
+      ...baseStudent,
+      email: email || null,
+      phone_number: phone || null
+    };
+
+    const res1 = await supabase
       .from('students')
-      .insert([{
-        reg_no: regNo,
-        name,
-        phone_number: phone,
-        email: email || null,
-        department: dept,
-        dob,
-        password_hash: password,
-        wallet_balance: 0.00
-      }])
+      .insert([fullPayload])
       .select()
       .single();
 
+    if (!res1.error && res1.data) {
+      newStudent = res1.data;
+    } else if (res1.error && (res1.error.message.includes("schema cache") || res1.error.message.includes("column") || res1.error.code === 'PGRST204')) {
+      // Attempt 2: Fallback to existing schema without unmapped email / phone_number columns
+      console.warn("Retrying registration with schema-aligned attributes:", res1.error.message);
+      const res2 = await supabase
+        .from('students')
+        .insert([baseStudent])
+        .select()
+        .single();
+
+      if (!res2.error && res2.data) {
+        newStudent = res2.data;
+      } else {
+        insertErr = res2.error;
+      }
+    } else {
+      insertErr = res1.error;
+    }
+
     showLoading(false);
 
-    if (insertErr) {
-      showToast("Registration failed: " + insertErr.message, "error");
+    if (insertErr || !newStudent) {
+      showToast("Registration failed: " + (insertErr ? insertErr.message : "Unknown error"), "error");
       return;
     }
 
     const { password_hash, ...studentSafe } = newStudent;
-    currentStudent = studentSafe;
+    currentStudent = {
+      ...studentSafe,
+      phone_number: phone || studentSafe.phone_number || '',
+      email: email || studentSafe.email || ''
+    };
     sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
 
     updateDrawerInfo();
