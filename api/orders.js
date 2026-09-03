@@ -20,6 +20,7 @@ async function findOrderByIdOrToken(identifier) {
         students (id, name, reg_no, department),
         order_items (
           id,
+          product_id,
           quantity,
           unit_price,
           products (id, name, price, stock_quantity, image_url)
@@ -55,6 +56,7 @@ async function findOrderByIdOrToken(identifier) {
         students (id, name, reg_no, department),
         order_items (
           id,
+          product_id,
           quantity,
           unit_price,
           products (id, name, price, stock_quantity, image_url)
@@ -77,6 +79,7 @@ async function findOrderByIdOrToken(identifier) {
         students (id, name, reg_no, department),
         order_items (
           id,
+          product_id,
           quantity,
           unit_price,
           products (id, name, price, stock_quantity, image_url)
@@ -283,6 +286,43 @@ module.exports = async (req, res) => {
 
       if (insertOrderErr) throw insertOrderErr;
 
+      // Ensure POS orders persist POS identity and #POS prefix past any BEFORE INSERT triggers
+      const isPos = order_type === 'POS' || body.order_source === 'POS' || body.is_pos === true;
+      const finalToken = isPos 
+        ? `#POS-${newOrder.token_number ? newOrder.token_number.replace(/^#[A-Z]+-/, '') : Math.floor(100 + Math.random() * 900)}` 
+        : newOrder.token_number;
+
+      const finalQrData = {
+        ...(typeof newOrder.qr_code_data === 'object' ? newOrder.qr_code_data : {}),
+        token_number: finalToken,
+        order_type: isPos ? 'POS' : (is_guest || !student_id ? 'GUEST_ORDER' : 'STUDENT_ORDER'),
+        order_source: isPos ? 'POS' : 'APP',
+        is_pos: isPos,
+        is_spot_sale: isPos,
+        payment_mode: paymentMode,
+        payment_status: initialPaymentStatus,
+        total_amount: totalAmount
+      };
+
+      const updatePayload = { qr_code_data: finalQrData };
+      if (isPos) {
+        updatePayload.token_number = finalToken;
+        updatePayload.order_status = 'DELIVERED';
+        updatePayload.payment_status = 'PAID';
+      }
+
+      await supabase
+        .from('orders')
+        .update(updatePayload)
+        .eq('id', newOrder.id);
+
+      newOrder.token_number = finalToken;
+      newOrder.qr_code_data = finalQrData;
+      if (isPos) {
+        newOrder.order_status = 'DELIVERED';
+        newOrder.payment_status = 'PAID';
+      }
+
       // 2. Insert Order Items
       const itemsPayload = orderItemsToInsert.map(oi => ({
         ...oi,
@@ -354,7 +394,53 @@ module.exports = async (req, res) => {
       } else if (action === 'mark_paid' || action === 'pay') {
         updates.payment_status = 'PAID';
       } else if (action === 'cancel') {
+        // Enforce strict 5-minute cancellation window
+        if (existingOrder.order_status === 'DELIVERED') {
+          return sendResponse(res, 400, false, 'Delivered orders cannot be cancelled');
+        }
+        if (existingOrder.order_status === 'CANCELLED') {
+          return sendResponse(res, 400, false, 'Order is already cancelled');
+        }
+
+        const createdAt = existingOrder.created_at ? new Date(existingOrder.created_at).getTime() : Date.now();
+        const elapsedMs = Date.now() - createdAt;
+        const CANCELLATION_GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 minutes
+
+        if (elapsedMs > CANCELLATION_GRACE_PERIOD_MS) {
+          return sendResponse(res, 400, false, 'Cancellation window closed. Orders can only be cancelled within 5 minutes of placement.');
+        }
+
         updates.order_status = 'CANCELLED';
+
+        const qd = typeof existingOrder.qr_code_data === 'object' && existingOrder.qr_code_data !== null
+          ? { ...existingOrder.qr_code_data }
+          : {};
+        qd.status = 'CANCELLED';
+        qd.cancelled_at = new Date().toISOString();
+        qd.cancel_reason = 'Cancelled by student within 5-minute grace period';
+        updates.qr_code_data = qd;
+
+        // Automatically increment and restore inventory stock for cancelled items
+        const orderItems = existingOrder.order_items || [];
+        for (const it of orderItems) {
+          const prodId = it.product_id || (it.products && it.products.id);
+          const qty = parseInt(it.quantity) || 0;
+          if (prodId && qty > 0) {
+            const { data: currentProd } = await supabase
+              .from('products')
+              .select('stock_quantity')
+              .eq('id', prodId)
+              .maybeSingle();
+
+            if (currentProd) {
+              const restoredStock = (currentProd.stock_quantity || 0) + qty;
+              await supabase
+                .from('products')
+                .update({ stock_quantity: restoredStock })
+                .eq('id', prodId);
+            }
+          }
+        }
       } else {
         if (order_status) updates.order_status = order_status;
         if (payment_status) updates.payment_status = payment_status;
@@ -373,6 +459,7 @@ module.exports = async (req, res) => {
           students (id, name, reg_no, department),
           order_items (
             id,
+            product_id,
             quantity,
             unit_price,
             products (id, name, price, stock_quantity, image_url)

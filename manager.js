@@ -148,11 +148,8 @@ async function initDashboard() {
   clockInterval = setInterval(updateLiveClock, 1000);
   updateLiveClock();
 
-  // Queue Ticker Interval (refreshes remaining cash payment minutes & purges expired orders from queue)
-  if (window._managerQueueTimer) clearInterval(window._managerQueueTimer);
-  window._managerQueueTimer = setInterval(() => {
-    renderOrderQueue();
-  }, 10000);
+  // Queue Live Ticker Interval (refreshes live MM:SS countdown & purges expired orders from queue)
+  startManagerQueueCountdownTicker();
 
   // Initialize Quick-Scan / Token input auto-focus
   initQuickTokenScanner();
@@ -260,16 +257,53 @@ async function fetchProducts() {
 async function fetchOrders() {
   try {
     const res = await fetch('/api/orders?type=all');
-    const result = await res.json();
-    if (result.success) {
-      orders = result.data || [];
-    } else {
-      throw new Error(result.error);
+    if (res.ok) {
+      const result = await res.json();
+      if (result.success && Array.isArray(result.data)) {
+        orders = result.data;
+        return orders;
+      }
     }
   } catch (err) {
-    console.error("Orders fetch error:", err);
-    orders = [];
+    console.warn("API orders fetch warning, trying Supabase direct:", err);
   }
+
+  // Direct Supabase fallback
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select(`
+          id,
+          token_number,
+          total_amount,
+          payment_method,
+          payment_status,
+          order_status,
+          qr_code_data,
+          created_at,
+          student_id,
+          students (id, name, reg_no, department),
+          order_items (
+            id,
+            product_id,
+            quantity,
+            unit_price,
+            products (id, name, price, stock_quantity, image_url)
+          )
+        `)
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        orders = data;
+        return orders;
+      }
+    } catch (sbErr) {
+      console.error("Supabase direct orders error:", sbErr);
+    }
+  }
+
+  return orders;
 }
 
 // 7. MODULE 1: Dashboard Analytics & Dynamic Calculations
@@ -302,59 +336,420 @@ function setSalesDateYesterday() {
   applySalesDateFilter();
 }
 
-function clearSalesDateFilter() {
-  const input = document.getElementById('sales-date-filter');
-  if (input) input.value = '';
+// State for Sales Analytics & Visuals
+let currentSalesPreset = 'today';
+let salesPaymentChart = null;
+let salesChannelChart = null;
+let salesTrendChart = null;
+
+function setSalesPreset(preset) {
+  currentSalesPreset = preset;
+
+  ['today', 'yesterday', 'week', 'all'].forEach(p => {
+    const btn = document.getElementById(`sales-btn-${p}`);
+    if (btn) {
+      if (p === preset) {
+        btn.className = 'text-xs font-bold px-3.5 py-1.5 rounded-xl bg-primary text-slate-900 shadow transition-all';
+      } else {
+        btn.className = 'text-xs font-bold px-3.5 py-1.5 rounded-xl bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all';
+      }
+    }
+  });
+
+  const rangeLabel = document.getElementById('sales-active-range-label');
+  if (rangeLabel) {
+    if (preset === 'today') rangeLabel.innerText = 'Today';
+    else if (preset === 'yesterday') rangeLabel.innerText = 'Yesterday';
+    else if (preset === 'week') rangeLabel.innerText = 'This Week';
+    else if (preset === 'all') rangeLabel.innerText = 'All Time';
+    else rangeLabel.innerText = 'Custom Range';
+  }
+
+  if (preset !== 'custom') {
+    const sInput = document.getElementById('sales-date-start');
+    const eInput = document.getElementById('sales-date-end');
+    if (sInput) sInput.value = '';
+    if (eInput) eInput.value = '';
+  }
+
   applySalesDateFilter();
 }
 
+function setSalesDateToday() { setSalesPreset('today'); }
+function setSalesDateYesterday() { setSalesPreset('yesterday'); }
+function clearSalesDateFilter() { setSalesPreset('all'); }
+
+function handleSalesCustomDateChange() {
+  const sInput = document.getElementById('sales-date-start');
+  const eInput = document.getElementById('sales-date-end');
+  if (sInput && sInput.value) {
+    currentSalesPreset = 'custom';
+    ['today', 'yesterday', 'week', 'all'].forEach(p => {
+      const btn = document.getElementById(`sales-btn-${p}`);
+      if (btn) {
+        btn.className = 'text-xs font-bold px-3.5 py-1.5 rounded-xl bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all';
+      }
+    });
+    const rangeLabel = document.getElementById('sales-active-range-label');
+    if (rangeLabel) rangeLabel.innerText = 'Custom Range';
+    applySalesDateFilter();
+  }
+}
+
+// Universal helper to detect Spot POS orders vs Student App orders
+function isOrderFromPos(o) {
+  if (!o) return false;
+  if (o.order_type === 'POS' || o.order_type === 'WALK_IN_POS') return true;
+  if (o.order_source === 'POS') return true;
+  if (o.is_pos === true || o.is_spot_sale === true) return true;
+  if (o.token_number && (o.token_number.startsWith('#POS') || o.token_number.startsWith('POS-'))) return true;
+
+  if (o.qr_code_data) {
+    let qd = o.qr_code_data;
+    if (typeof qd === 'string') {
+      try { qd = JSON.parse(qd); } catch(e) {}
+    }
+    if (qd && typeof qd === 'object') {
+      if (qd.order_type === 'POS' || qd.order_type === 'WALK_IN_POS') return true;
+      if (qd.order_source === 'POS') return true;
+      if (qd.is_pos === true || qd.is_spot_sale === true) return true;
+      if (qd.token_number && (qd.token_number.startsWith('#POS') || qd.token_number.startsWith('POS-'))) return true;
+    }
+  }
+
+  // Counter Walk-in Spot POS orders have no student profile attached
+  if (!o.student_id && (!o.students || !o.students.reg_no)) {
+    let isAppGuest = false;
+    if (o.qr_code_data) {
+      let qd = o.qr_code_data;
+      if (typeof qd === 'string') {
+        try { qd = JSON.parse(qd); } catch(e) {}
+      }
+      if (qd && (qd.order_type === 'GUEST_ORDER' || qd.is_guest === true)) {
+        isAppGuest = true;
+      }
+    }
+    if (!isAppGuest) return true;
+  }
+
+  return false;
+}
+
 async function renderSalesSummary() {
+  await fetchOrders();
   await applySalesDateFilter();
 }
 
 async function applySalesDateFilter() {
-  const dateInput = document.getElementById('sales-date-filter');
-  const date = dateInput ? dateInput.value : '';
-
-  const labelEl = document.getElementById('sales-date-label');
-  if (labelEl) {
-    if (!date) labelEl.innerText = 'Lifetime';
-    else if (date === todayDateString()) labelEl.innerText = 'Today';
-    else if (date === yesterdayDateString()) labelEl.innerText = 'Yesterday';
-    else labelEl.innerText = new Date(date + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-  }
+  const preset = currentSalesPreset;
+  const today = todayDateString();
+  const yesterday = yesterdayDateString();
 
   const filtered = orders.filter(o => {
     if (!o.created_at) return false;
     const orderDate = o.created_at.split('T')[0];
-    return !date || orderDate === date;
+
+    if (preset === 'today') return orderDate === today;
+    if (preset === 'yesterday') return orderDate === yesterday;
+    if (preset === 'week') {
+      const orderTime = new Date(o.created_at).getTime();
+      const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      return orderTime >= weekAgo;
+    }
+    if (preset === 'custom') {
+      const start = document.getElementById('sales-date-start')?.value;
+      const end = document.getElementById('sales-date-end')?.value;
+      if (start && orderDate < start) return false;
+      if (end && orderDate > end) return false;
+      return true;
+    }
+    return true; // 'all'
   });
 
+  // Strict completed / delivered orders filtering
   const delivered = filtered.filter(o => o.order_status === 'DELIVERED');
-  const cashOrders = delivered.filter(o => o.payment_method === 'CASH_AT_COUNTER' || (o.qr_code_data && o.qr_code_data.payment_mode === 'CASH'));
-  const upiOrders = delivered.filter(o => o.payment_method === 'ONLINE' || (o.qr_code_data && o.qr_code_data.payment_mode === 'UPI'));
+  const cancelled = filtered.filter(o => o.order_status === 'CANCELLED');
+
+  // Payment Breakdown
+  const cashOrders = delivered.filter(o => {
+    const isUpi = o.payment_method === 'ONLINE' || (o.qr_code_data && o.qr_code_data.payment_mode === 'UPI');
+    return !isUpi;
+  });
+  const upiOrders = delivered.filter(o => {
+    return o.payment_method === 'ONLINE' || (o.qr_code_data && o.qr_code_data.payment_mode === 'UPI');
+  });
+
+  // Channel Breakdown
+
+  // Channel Breakdown
+  const posOrders = delivered.filter(isOrderFromPos);
+  const onlineAppOrders = delivered.filter(o => !isOrderFromPos(o));
 
   const totalRev = delivered.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
   const cashRev = cashOrders.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
   const upiRev = upiOrders.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
+  const posRev = posOrders.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
+  const onlineAppRev = onlineAppOrders.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
 
+  const aov = delivered.length > 0 ? (totalRev / delivered.length) : 0;
+  const cashPct = totalRev > 0 ? Math.round((cashRev / totalRev) * 100) : 0;
+  const upiPct = totalRev > 0 ? Math.round((upiRev / totalRev) * 100) : 0;
+  const posPct = totalRev > 0 ? Math.round((posRev / totalRev) * 100) : 0;
+  const onlineAppPct = totalRev > 0 ? Math.round((onlineAppRev / totalRev) * 100) : 0;
+
+  // Update Top KPI Cards
   const totalEl  = document.getElementById('sales-total');
+  const aovEl    = document.getElementById('sales-aov');
   const cashEl   = document.getElementById('sales-cash');
+  const cashShareEl = document.getElementById('sales-cash-share');
+  const cashCountEl = document.getElementById('sales-cash-count');
   const onlineEl = document.getElementById('sales-online');
+  const upiShareEl = document.getElementById('sales-upi-share');
+  const upiCountEl = document.getElementById('sales-upi-count');
   const countEl  = document.getElementById('sales-count');
+  const cancelledEl = document.getElementById('sales-cancelled-count');
 
-  if (totalEl)  totalEl.innerText  = `₹${totalRev.toFixed(2)}`;
-  if (cashEl)   cashEl.innerText   = `₹${cashRev.toFixed(2)}`;
+  if (totalEl) totalEl.innerText = `₹${totalRev.toFixed(2)}`;
+  if (aovEl) aovEl.innerText = `Avg: ₹${aov.toFixed(2)}`;
+  if (cashEl) cashEl.innerText = `₹${cashRev.toFixed(2)}`;
+  if (cashShareEl) cashShareEl.innerText = `${cashPct}% of total`;
+  if (cashCountEl) cashCountEl.innerText = `${cashOrders.length} txns`;
   if (onlineEl) onlineEl.innerText = `₹${upiRev.toFixed(2)}`;
-  if (countEl)  countEl.innerText  = delivered.length;
+  if (upiShareEl) upiShareEl.innerText = `${upiPct}% of total`;
+  if (upiCountEl) upiCountEl.innerText = `${upiOrders.length} txns`;
+  if (countEl) countEl.innerText = delivered.length;
+  if (cancelledEl) cancelledEl.innerText = `${cancelled.length} cancelled`;
 
-  if (!date || date === todayDateString()) {
+  // Update Channels
+  const chOnlineAmt = document.getElementById('sales-channel-online-amt');
+  const chOnlineCount = document.getElementById('sales-channel-online-count');
+  const chOnlinePct = document.getElementById('sales-channel-online-pct');
+  const chOnlineBar = document.getElementById('sales-channel-online-bar');
+  const chPosAmt = document.getElementById('sales-channel-pos-amt');
+  const chPosCount = document.getElementById('sales-channel-pos-count');
+  const chPosPct = document.getElementById('sales-channel-pos-pct');
+  const chPosBar = document.getElementById('sales-channel-pos-bar');
+
+  if (chOnlineAmt) chOnlineAmt.innerText = `₹${onlineAppRev.toFixed(2)}`;
+  if (chOnlineCount) chOnlineCount.innerText = `${onlineAppOrders.length} orders`;
+  if (chOnlinePct) chOnlinePct.innerText = `${onlineAppPct}%`;
+  if (chOnlineBar) chOnlineBar.style.width = `${onlineAppPct}%`;
+
+  if (chPosAmt) chPosAmt.innerText = `₹${posRev.toFixed(2)}`;
+  if (chPosCount) chPosCount.innerText = `${posOrders.length} orders`;
+  if (chPosPct) chPosPct.innerText = `${posPct}%`;
+  if (chPosBar) chPosBar.style.width = `${posPct}%`;
+
+  // Sync dashboard top metric cards if today
+  if (preset === 'today') {
     updateTopLiveMetricCards({
       total_revenue: totalRev,
       cash_revenue: cashRev,
       upi_revenue: upiRev,
       delivered_count: delivered.length
     });
+  }
+
+  // Render Visual Charts
+  renderSalesCharts({
+    totalRev,
+    cashRev,
+    upiRev,
+    posRev,
+    onlineAppRev,
+    deliveredOrders: delivered
+  });
+}
+
+function renderSalesCharts(data) {
+  if (typeof Chart === 'undefined') return;
+
+  const { totalRev, cashRev, upiRev, posRev, onlineAppRev, deliveredOrders } = data;
+
+  // Chart 1: Payment Method Donut
+  const payCanvas = document.getElementById('chart-payment-split');
+  const payEmpty = document.getElementById('chart-payment-empty');
+  if (payCanvas) {
+    if (salesPaymentChart) {
+      salesPaymentChart.destroy();
+      salesPaymentChart = null;
+    }
+
+    if (totalRev <= 0) {
+      payCanvas.classList.add('hidden');
+      if (payEmpty) payEmpty.classList.remove('hidden');
+    } else {
+      payCanvas.classList.remove('hidden');
+      if (payEmpty) payEmpty.classList.add('hidden');
+
+      salesPaymentChart = new Chart(payCanvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Cash in Hand', 'UPI Collection'],
+          datasets: [{
+            data: [cashRev, upiRev],
+            backgroundColor: ['#10B981', '#3B82F6'],
+            borderColor: '#0F172A',
+            borderWidth: 2,
+            hoverOffset: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: {
+                color: '#94A3B8',
+                font: { size: 11, weight: 'bold' },
+                padding: 14
+              }
+            },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => ` ₹${Number(ctx.raw).toFixed(2)} (${totalRev > 0 ? Math.round((ctx.raw / totalRev) * 100) : 0}%)`
+              }
+            }
+          },
+          cutout: '70%'
+        }
+      });
+    }
+  }
+
+  // Chart 2: Channel Split Donut
+  const channelCanvas = document.getElementById('chart-channel-split');
+  const channelEmpty = document.getElementById('chart-channel-empty');
+  if (channelCanvas) {
+    if (salesChannelChart) {
+      salesChannelChart.destroy();
+      salesChannelChart = null;
+    }
+
+    if (totalRev <= 0) {
+      channelCanvas.classList.add('hidden');
+      if (channelEmpty) channelEmpty.classList.remove('hidden');
+    } else {
+      channelCanvas.classList.remove('hidden');
+      if (channelEmpty) channelEmpty.classList.add('hidden');
+
+      salesChannelChart = new Chart(channelCanvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Student App Orders', 'Walk-in Counter POS'],
+          datasets: [{
+            data: [onlineAppRev, posRev],
+            backgroundColor: ['#10B981', '#F59E0B'],
+            borderColor: '#0F172A',
+            borderWidth: 2,
+            hoverOffset: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: {
+                color: '#94A3B8',
+                font: { size: 11, weight: 'bold' },
+                padding: 14
+              }
+            },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => ` ₹${Number(ctx.raw).toFixed(2)} (${totalRev > 0 ? Math.round((ctx.raw / totalRev) * 100) : 0}%)`
+              }
+            }
+          },
+          cutout: '70%'
+        }
+      });
+    }
+  }
+
+  // Chart 3: Revenue Trend Timeline
+  const trendCanvas = document.getElementById('chart-revenue-trend');
+  const trendEmpty = document.getElementById('chart-trend-empty');
+  if (trendCanvas) {
+    if (salesTrendChart) {
+      salesTrendChart.destroy();
+      salesTrendChart = null;
+    }
+
+    if (!deliveredOrders || deliveredOrders.length === 0) {
+      trendCanvas.classList.add('hidden');
+      if (trendEmpty) trendEmpty.classList.remove('hidden');
+    } else {
+      trendCanvas.classList.remove('hidden');
+      if (trendEmpty) trendEmpty.classList.add('hidden');
+
+      const isMultiDay = currentSalesPreset === 'week' || currentSalesPreset === 'all' || currentSalesPreset === 'custom';
+      const trendMap = {};
+
+      const sorted = [...deliveredOrders].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+      sorted.forEach(o => {
+        const d = new Date(o.created_at);
+        let key = '';
+        if (isMultiDay) {
+          key = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+        } else {
+          let h = d.getHours();
+          const ampm = h >= 12 ? 'PM' : 'AM';
+          h = h % 12 || 12;
+          key = `${h} ${ampm}`;
+        }
+        trendMap[key] = (trendMap[key] || 0) + (parseFloat(o.total_amount) || 0);
+      });
+
+      const labels = Object.keys(trendMap);
+      const values = Object.values(trendMap);
+
+      salesTrendChart = new Chart(trendCanvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Sales Revenue (₹)',
+            data: values,
+            backgroundColor: 'rgba(245, 158, 11, 0.7)',
+            borderColor: '#F59E0B',
+            borderWidth: 1.5,
+            borderRadius: 6
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: {
+              grid: { color: 'rgba(51, 65, 85, 0.3)' },
+              ticks: { color: '#94A3B8', font: { size: 10 } }
+            },
+            y: {
+              grid: { color: 'rgba(51, 65, 85, 0.3)' },
+              ticks: {
+                color: '#94A3B8',
+                font: { size: 10 },
+                callback: (val) => '₹' + val
+              },
+              beginAtZero: true
+            }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => ` ₹${Number(ctx.raw).toFixed(2)}`
+              }
+            }
+          }
+        }
+      });
+    }
   }
 }
 
@@ -383,13 +778,6 @@ function updateTopLiveMetricCards(summaryData = null) {
   if (cashEl)   cashEl.innerText   = `₹${(summary.cash_revenue || 0).toFixed(2)}`;
   if (upiEl)    upiEl.innerText    = `₹${((summary.upi_revenue !== undefined ? summary.upi_revenue : summary.online_revenue) || 0).toFixed(2)}`;
   if (ordersEl) ordersEl.innerText = `${summary.delivered_count || 0}`;
-}
-
-async function saveHandCash() {
-  const value = parseFloat(document.getElementById("hand-cash-input").value) || 0;
-  if (value <= 0) return;
-  localStorage.setItem("hand_cash_amount", value.toFixed(2));
-  showToast(`Hand Cash entry saved: ₹${value.toFixed(2)}`, "success");
 }
 
 // 8. MODULE 3: Inventory Management (Products CRUD)
@@ -495,12 +883,37 @@ function renderInventoryTable() {
     const cat = categories.find(c => c.id === p.category_id);
     const catName = cat ? cat.name : "Uncategorized";
     const catEmoji = cat ? (cat.icon_url || cat.icon || '📦') : "📦";
+    const qty = parseInt(p.stock_quantity) || 0;
+
+    let stockBadge = '';
+    if (qty === 0) {
+      stockBadge = `
+        <span class="inline-flex items-center gap-1.5 bg-rose-500/15 text-rose-400 border border-rose-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide whitespace-nowrap shadow-sm">
+          <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span> 0 &bull; Out of Stock
+        </span>
+      `;
+    } else if (qty <= 10) {
+      stockBadge = `
+        <span class="inline-flex items-center gap-1.5 bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide whitespace-nowrap shadow-sm">
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span> ${qty} &bull; Low Stock
+        </span>
+      `;
+    } else {
+      stockBadge = `
+        <span class="inline-flex items-center gap-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> ${qty} in stock
+        </span>
+      `;
+    }
 
     return `
-      <tr class="border-b border-slate-800/40 hover:bg-slate-800/10">
+      <tr class="border-b border-slate-800/40 hover:bg-slate-800/10 transition-colors ${qty === 0 ? 'bg-rose-950/5' : (qty <= 10 ? 'bg-amber-950/5' : '')}">
         <td class="py-3 flex items-center gap-3">
           <img src="${p.image_url || 'https://images.unsplash.com/photo-1546273031-28b72a64353b?w=100'}" alt="${p.name}" class="w-8 h-8 rounded-lg object-cover flex-shrink-0 bg-slate-900 border border-slate-800">
-          <span class="font-semibold text-slate-200 truncate max-w-[120px]">${p.name}</span>
+          <div class="truncate max-w-[140px]">
+            <span class="font-semibold text-slate-200 block truncate">${p.name}</span>
+            ${p.barcode_id ? `<span class="text-[9px] font-mono text-slate-500 block truncate">BC: ${p.barcode_id}</span>` : ''}
+          </div>
         </td>
         <td class="py-3">
           <span class="inline-flex items-center gap-1 bg-slate-900 text-slate-300 px-2 py-0.5 rounded border border-slate-800 text-[10px]">
@@ -508,18 +921,18 @@ function renderInventoryTable() {
           </span>
         </td>
         <td class="py-3 text-right font-bold text-slate-300">₹${p.price.toFixed(2)}</td>
-        <td class="py-3">
+        <td class="py-3 text-center">
           <div class="flex items-center justify-center gap-2">
-            <button onclick="updateProductStock('${p.id}', ${p.stock_quantity - 1})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded">-</button>
-            <span class="font-bold text-slate-200 text-xs w-6 text-center">${p.stock_quantity}</span>
-            <button onclick="updateProductStock('${p.id}', ${p.stock_quantity + 1})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded">+</button>
+            <button onclick="updateProductStock('${p.id}', ${Math.max(0, qty - 1)})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded active:scale-95 transition-all">-</button>
+            ${stockBadge}
+            <button onclick="updateProductStock('${p.id}', ${qty + 1})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded active:scale-95 transition-all">+</button>
           </div>
         </td>
-        <td class="py-3 text-right">
-          <button onclick="openEditItemModal('${p.id}')" class="text-xs bg-slate-900 border border-slate-800 text-amber-400 hover:bg-amber-500 hover:text-slate-900 font-bold px-2 py-1 rounded transition-all mr-1">
+        <td class="py-3 text-right whitespace-nowrap">
+          <button onclick="openEditItemModal('${p.id}')" class="text-xs bg-slate-900 border border-slate-800 text-amber-400 hover:bg-amber-500 hover:text-slate-900 font-bold px-2 py-1 rounded transition-all mr-1 shadow-sm">
             ✏️ Edit
           </button>
-          <button onclick="deleteProduct('${p.id}')" class="text-xs bg-slate-900 border border-slate-800 text-rose-400 hover:bg-rose-500 hover:text-white font-bold px-2 py-1 rounded transition-all">
+          <button onclick="deleteProduct('${p.id}')" class="text-xs bg-slate-900 border border-slate-800 text-rose-400 hover:bg-rose-500 hover:text-white font-bold px-2 py-1 rounded transition-all shadow-sm">
             🗑️ Delete
           </button>
         </td>
@@ -1034,6 +1447,8 @@ function playBeep(type = 'success') {
 }
 
 // 13. Order Verification & Token Scanner
+let canConfirmOnEnter = false;
+
 function initQuickTokenScanner() {
   const scannerInput = document.getElementById('quickTokenScanner');
   if (!scannerInput) return;
@@ -1041,8 +1456,21 @@ function initQuickTokenScanner() {
   scannerInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      const modal = document.getElementById('order-detail-modal');
+      const isModalOpen = modal && !modal.classList.contains('hidden');
+
+      // If details modal is open and armed, this is the Second Enter:
+      if (isModalOpen && canConfirmOnEnter && currentOrderInModal && !currentOrderInModal.isDelivered) {
+        executeQuickVerify(currentOrderInModal.token || currentOrderInModal.id);
+        return;
+      }
+
+      // First Enter: Look up order and open details preview
       const val = scannerInput.value.trim();
-      if (val) executeQuickVerify(val);
+      if (val) {
+        scannerInput.blur();
+        verifyOrderLookup(val);
+      }
     }
   });
 
@@ -1052,9 +1480,18 @@ function initQuickTokenScanner() {
 function handleQuickTokenScanTrigger() {
   const scannerInput = document.getElementById('quickTokenScanner');
   if (!scannerInput) return;
+  const modal = document.getElementById('order-detail-modal');
+  const isModalOpen = modal && !modal.classList.contains('hidden');
+
+  if (isModalOpen && canConfirmOnEnter && currentOrderInModal && !currentOrderInModal.isDelivered) {
+    executeQuickVerify(currentOrderInModal.token || currentOrderInModal.id);
+    return;
+  }
+
   const val = scannerInput.value.trim();
   if (val) {
-    executeQuickVerify(val);
+    scannerInput.blur();
+    verifyOrderLookup(val);
   } else {
     showToast("Please enter a token number or scan QR code", "info");
     scannerInput.focus();
@@ -1066,7 +1503,7 @@ function handleManualTokenSubmit() {
   if (input && input.value.trim()) {
     const val = input.value.trim();
     closeScannerModal();
-    executeQuickVerify(val);
+    verifyOrderLookup(val);
   }
 }
 
@@ -1343,7 +1780,7 @@ function openOrderDetailModal(order) {
           </button>
         ` : `
           <button id="btn-modal-verify-deliver" onclick="executeQuickVerify('${tokenNumber || orderId}');" class="flex-1 bg-primary hover:bg-primary-dark text-slate-950 font-black py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all shadow-lg active:scale-95">
-            <i data-lucide="zap" class="w-4 h-4"></i> ⚡ Verify & Deliver
+            <i data-lucide="check-circle" class="w-4 h-4"></i> ⚡ Confirm & Deliver
           </button>
         `}
       </div>
@@ -1352,6 +1789,7 @@ function openOrderDetailModal(order) {
 
   // Track current order for Enter-key shortcut
   currentOrderInModal = { id: orderId, token: tokenNumber, isDelivered: isDelivered || isExpired };
+  canConfirmOnEnter = false; // Disarm immediately so the first Enter cannot confirm
 
   // Show / hide the Enter-to-deliver keyboard hint
   const enterHint = document.getElementById('enter-deliver-hint');
@@ -1360,14 +1798,24 @@ function openOrderDetailModal(order) {
     else enterHint.classList.add('hidden');
   }
 
+  if (enterDeliverListener) {
+    document.removeEventListener('keydown', enterDeliverListener);
+    enterDeliverListener = null;
+  }
+
   if (!isDelivered && !isExpired) {
-    if (enterDeliverListener) {
-      document.removeEventListener('keydown', enterDeliverListener);
-    }
     enterDeliverListener = (e) => {
-      if (e.key === 'Enter' && currentOrderInModal && !currentOrderInModal.isDelivered) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeOrderDetailModal();
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        // Second Enter key press confirms and delivers
+        if (!canConfirmOnEnter) return;
         const m = document.getElementById('order-detail-modal');
-        if (m && !m.classList.contains('hidden')) {
+        if (m && !m.classList.contains('hidden') && currentOrderInModal && !currentOrderInModal.isDelivered) {
           e.preventDefault();
           executeQuickVerify(currentOrderInModal.token || currentOrderInModal.id);
         }
@@ -1378,6 +1826,15 @@ function openOrderDetailModal(order) {
 
   modal.classList.remove("hidden");
   if (window.lucide) lucide.createIcons();
+
+  // Safety cooldown: Arm second Enter press and focus the "Confirm & Deliver" button
+  setTimeout(() => {
+    canConfirmOnEnter = true;
+    const confirmBtn = document.getElementById('btn-modal-verify-deliver');
+    if (confirmBtn && !isDelivered && !isExpired) {
+      confirmBtn.focus();
+    }
+  }, 250);
 }
 
 function openOrderDetailModalByID(orderId) {
@@ -1386,12 +1843,19 @@ function openOrderDetailModalByID(orderId) {
 }
 
 function closeOrderDetailModal() {
+  canConfirmOnEnter = false;
+  currentOrderInModal = null;
   const modal = document.getElementById("order-detail-modal");
   if (modal) modal.classList.add("hidden");
-  currentOrderInModal = null;
   if (enterDeliverListener) {
     document.removeEventListener('keydown', enterDeliverListener);
     enterDeliverListener = null;
+  }
+
+  const scannerInput = document.getElementById('quickTokenScanner');
+  if (scannerInput) {
+    scannerInput.value = '';
+    setTimeout(() => scannerInput.focus(), 100);
   }
 }
 
@@ -1404,12 +1868,11 @@ function renderOrderQueue() {
   const now = Date.now();
   const pending = orders.filter(o => {
     if (o.order_status === 'DELIVERED' || o.order_status === 'CANCELLED') return false;
-    const isCash = o.payment_method === 'CASH_AT_COUNTER';
     const isPaid = o.payment_status === 'PAID';
-    if (isCash && !isPaid) {
+    if (!isPaid) {
       const orderCreatedAt = o.created_at ? new Date(o.created_at).getTime() : now;
       if (now - orderCreatedAt > 30 * 60 * 1000) {
-        return false; // Auto-remove expired cash orders from active queue
+        return false; // Auto-remove expired unpaid orders (Cash or UPI) from active queue
       }
     }
     return true;
@@ -1435,7 +1898,11 @@ function renderOrderQueue() {
       : 'Just now';
     const isPaid = o.payment_status === 'PAID';
     const orderCreatedAt = o.created_at ? new Date(o.created_at).getTime() : now;
-    const remMins = Math.max(1, Math.ceil((30 * 60 * 1000 - (now - orderCreatedAt)) / 60000));
+    const elapsedSec = Math.floor((now - orderCreatedAt) / 1000);
+    const remSeconds = Math.max(0, 30 * 60 - elapsedSec);
+    const remM = Math.floor(remSeconds / 60);
+    const remS = remSeconds % 60;
+    const countdownText = `${remM}m ${String(remS).padStart(2, '0')}s left`;
 
     // Extract payment_mode ('CASH' vs 'UPI') and check guest status
     let paymentMode = 'CASH';
@@ -1493,25 +1960,17 @@ function renderOrderQueue() {
       modeBadge = `
         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 whitespace-nowrap">
           <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-          👨‍🍳 In Kitchen &bull; PAID (${paymentMode})
+          Pre-paid (${paymentMode})
         </span>
       `;
     }
 
-    // Action buttons: [ ✓ Mark Paid ] (if unpaid) and [ ⚡ Verify & Deliver ]
+    // Single-action delivery & payment button: [ ⚡ Verify & Deliver ]
     const actionBtns = `
-      <div class="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-        ${!isPaid ? `
-          <button onclick="event.stopPropagation(); confirmOrderPayment('${o.id}')"
-            class="px-3 py-2 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-400 font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-1 active:scale-95 whitespace-nowrap shadow-sm">
-            <i data-lucide="check" class="w-3.5 h-3.5"></i> ✓ Mark Paid
-          </button>
-        ` : ''}
-        <button onclick="event.stopPropagation(); executeQuickVerify('${o.token_number || o.id}')"
-          class="px-4 py-2 bg-primary hover:bg-primary-dark text-slate-950 font-black rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 shadow-md active:scale-95 whitespace-nowrap">
-          <i data-lucide="zap" class="w-4 h-4"></i> ⚡ Verify & Deliver
-        </button>
-      </div>
+      <button onclick="event.stopPropagation(); executeQuickVerify('${o.token_number || o.id}')"
+        class="px-4 py-2.5 bg-primary hover:bg-primary-dark text-slate-950 font-black rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 shadow-md active:scale-95 whitespace-nowrap">
+        <i data-lucide="zap" class="w-4 h-4"></i> ⚡ Verify & Deliver
+      </button>
     `;
 
     const customerDisplay = isGuest 
@@ -1527,7 +1986,12 @@ function renderOrderQueue() {
             ${modeBadge}
           </div>
           <p class="text-slate-300 font-semibold text-xs mt-1 truncate">${customerDisplay} &bull; <span class="text-slate-400 text-[10px]">${timeStr}</span></p>
-          ${!isPaid ? `<p class="text-[10px] text-amber-400/80 font-medium">${remMins}m remaining in counter window</p>` : ''}
+          ${!isPaid ? `
+            <p class="text-[10px] text-amber-400 font-medium flex items-center gap-1.5 mt-0.5">
+              <i data-lucide="clock" class="w-3 h-3 text-amber-400"></i>
+              <span class="queue-card-timer font-mono font-bold" data-created-at="${orderCreatedAt}">${countdownText}</span>
+            </p>
+          ` : ''}
         </div>
         <div class="flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-3 flex-shrink-0">
           <span class="font-black text-slate-100 text-base">₹${parseFloat(o.total_amount || 0).toFixed(2)}</span>
@@ -1538,6 +2002,37 @@ function renderOrderQueue() {
   }).join('');
 
   if (window.lucide) lucide.createIcons();
+  startManagerQueueCountdownTicker();
+}
+
+function startManagerQueueCountdownTicker() {
+  if (window._managerQueueTimer) clearInterval(window._managerQueueTimer);
+  window._managerQueueTimer = setInterval(() => {
+    const timerEls = document.querySelectorAll('.queue-card-timer');
+    if (!timerEls || timerEls.length === 0) return;
+    const currentTime = Date.now();
+    let hasExpired = false;
+
+    timerEls.forEach(el => {
+      const created = parseInt(el.getAttribute('data-created-at'), 10);
+      if (isNaN(created)) return;
+      const elapsedSec = Math.floor((currentTime - created) / 1000);
+      const remainingSec = Math.max(0, 30 * 60 - elapsedSec);
+
+      if (remainingSec <= 0) {
+        el.innerText = '0m 00s left (Expired)';
+        hasExpired = true;
+      } else {
+        const m = Math.floor(remainingSec / 60);
+        const s = remainingSec % 60;
+        el.innerText = `${m}m ${String(s).padStart(2, '0')}s left`;
+      }
+    });
+
+    if (hasExpired) {
+      renderOrderQueue();
+    }
+  }, 1000);
 }
 
 // 16. Realtime Orders Stream Listener
@@ -1669,53 +2164,176 @@ function handleHistoryCustomDateChange() {
   }
 }
 
+async function fetchOrderHistory() {
+  // 1. Direct Supabase query (Primary for reliable history lookup)
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select(`
+          id,
+          token_number,
+          total_amount,
+          payment_method,
+          payment_status,
+          order_status,
+          qr_code_data,
+          created_at,
+          student_id,
+          students (id, name, reg_no, department),
+          order_items (
+            id,
+            product_id,
+            quantity,
+            unit_price,
+            products (id, name, price, stock_quantity, image_url)
+          )
+        `)
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        return data;
+      }
+      if (error) {
+        console.warn("Direct Supabase history fetch error:", error);
+      }
+    } catch (sbErr) {
+      console.warn("Direct Supabase history exception:", sbErr);
+    }
+  }
+
+  // 2. API fallback
+  try {
+    const res = await fetch('/api/orders?type=all');
+    if (res.ok) {
+      const result = await res.json();
+      if (result.success && Array.isArray(result.data)) {
+        return result.data;
+      }
+    }
+  } catch (apiErr) {
+    console.warn("API fallback error in history fetch:", apiErr);
+  }
+
+  return [];
+}
+
 async function loadHistoryView() {
   const loadingEl = document.getElementById('history-loading-state');
+  const emptyEl   = document.getElementById('history-empty-state');
+  const wrapperEl = document.getElementById('history-table-wrapper');
+
   if (loadingEl) loadingEl.classList.remove('hidden');
+  if (emptyEl)   emptyEl.classList.add('hidden');
+  if (wrapperEl) wrapperEl.classList.add('hidden');
 
-  await fetchOrders();
+  try {
+    const historyRecords = await fetchOrderHistory();
+    if (Array.isArray(historyRecords) && historyRecords.length > 0) {
+      orders = historyRecords;
+    } else if (!orders || orders.length === 0) {
+      await fetchOrders();
+    }
+  } catch (err) {
+    console.error("Orders history fetch error:", err);
+  } finally {
+    // Crucial: ALWAYS clear loading state in finally block so UI never stays frozen
+    if (loadingEl) loadingEl.classList.add('hidden');
+    try {
+      filterHistoryTable();
+    } catch (renderErr) {
+      console.error("History rendering error:", renderErr);
+      if (emptyEl) emptyEl.classList.remove('hidden');
+      if (wrapperEl) wrapperEl.classList.add('hidden');
+    }
+  }
+}
 
-  if (loadingEl) loadingEl.classList.add('hidden');
-  filterHistoryTable();
+// Function aliases for compatibility
+async function loadOrderHistory() {
+  return await loadHistoryView();
+}
+async function fetchHistory() {
+  return await fetchOrderHistory();
 }
 
 function filterHistoryTable() {
-  const rangeType = currentHistoryPreset;
+  const rangeType = currentHistoryPreset || 'all';
   const statusFilter = document.getElementById("history-status-filter")?.value || "ALL";
   const typeFilter = document.getElementById("history-type-filter")?.value || "ALL";
-  const searchTerm = (document.getElementById("history-search")?.value || "").toLowerCase().trim();
+  const searchInput = document.getElementById("history-search");
+  const searchTerm = searchInput ? (searchInput.value || "").toLowerCase().trim() : "";
 
   const today = todayDateString();
   const yesterday = yesterdayDateString();
 
-  let filtered = orders.filter(o => {
-    if (!o.created_at) return false;
-    const orderDate = o.created_at.split('T')[0];
+  const recordList = Array.isArray(orders) ? orders : [];
 
-    if (rangeType === 'today' && orderDate !== today) return false;
-    if (rangeType === 'yesterday' && orderDate !== yesterday) return false;
+  const filtered = recordList.filter(o => {
+    if (!o) return false;
+
+    // Safe Date Extraction
+    let orderDate = '';
+    let orderTime = 0;
+    if (o.created_at) {
+      try {
+        const d = new Date(o.created_at);
+        if (!isNaN(d.getTime())) {
+          orderTime = d.getTime();
+          orderDate = d.toISOString().split('T')[0];
+        }
+      } catch(e) {}
+    }
+
+    if (rangeType === 'today' && orderDate && orderDate !== today) return false;
+    if (rangeType === 'yesterday' && orderDate && orderDate !== yesterday) return false;
     if (rangeType === 'week') {
-      const orderTime = new Date(o.created_at).getTime();
       const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      if (orderTime < weekAgo) return false;
+      if (orderTime > 0 && orderTime < weekAgo) return false;
     }
     if (rangeType === 'custom') {
       const start = document.getElementById("history-date-start")?.value;
       const end = document.getElementById("history-date-end")?.value;
-      if (start && orderDate < start) return false;
-      if (end && orderDate > end) return false;
+      if (start && orderDate && orderDate < start) return false;
+      if (end && orderDate && orderDate > end) return false;
     }
 
-    if (statusFilter !== 'ALL' && o.order_status !== statusFilter) return false;
+    if (statusFilter !== 'ALL' && (o.order_status || 'PENDING') !== statusFilter) return false;
 
-    if (typeFilter === 'ONLINE' && (o.order_type === 'POS' || o.payment_method === 'CASH_AT_COUNTER')) return false;
-    if (typeFilter === 'POS' && o.order_type !== 'POS') return false;
+    const isPos = isOrderFromPos(o);
+    if (typeFilter === 'ONLINE' && isPos) return false;
+    if (typeFilter === 'POS' && !isPos) return false;
 
     if (searchTerm) {
-      const token = (o.token_number || '').toLowerCase();
-      const studentName = (o.students?.name || o.qr_code_data?.guest_name || '').toLowerCase();
-      const regNo = (o.students?.reg_no || '').toLowerCase();
-      const matchesItem = (o.order_items || []).some(oi => (oi.products?.name || oi.name || '').toLowerCase().includes(searchTerm));
+      const token = String(o.token_number || '').toLowerCase();
+      
+      let studentName = '';
+      if (o.students) {
+        if (Array.isArray(o.students) && o.students[0]) studentName = o.students[0].name || '';
+        else if (typeof o.students === 'object') studentName = o.students.name || '';
+      }
+      if (!studentName && o.qr_code_data) {
+        let qd = o.qr_code_data;
+        if (typeof qd === 'string') {
+          try { qd = JSON.parse(qd); } catch(e) {}
+        }
+        if (qd && typeof qd === 'object') studentName = qd.guest_name || '';
+      }
+      studentName = String(studentName || '').toLowerCase();
+
+      let regNo = '';
+      if (o.students) {
+        if (Array.isArray(o.students) && o.students[0]) regNo = o.students[0].reg_no || '';
+        else if (typeof o.students === 'object') regNo = o.students.reg_no || '';
+      }
+      regNo = String(regNo || '').toLowerCase();
+
+      const itemsList = Array.isArray(o.order_items) ? o.order_items : [];
+      const matchesItem = itemsList.some(oi => {
+        if (!oi) return false;
+        const pName = (oi.products && typeof oi.products === 'object' ? (oi.products.name || '') : '') || (oi.name || '');
+        return String(pName).toLowerCase().includes(searchTerm);
+      });
 
       if (!token.includes(searchTerm) && !studentName.includes(searchTerm) && !regNo.includes(searchTerm) && !matchesItem) {
         return false;
@@ -1736,37 +2354,31 @@ function renderHistoryTable(records) {
 
   if (loadingEl) loadingEl.classList.add('hidden');
 
-  // Compute History Summary Stats
-  const delivered = records.filter(o => o.order_status === 'DELIVERED');
-  const cancelled = records.filter(o => o.order_status === 'CANCELLED');
-  const onlineOrders = delivered.filter(o => o.payment_method === 'ONLINE' || (o.qr_code_data && o.qr_code_data.payment_mode === 'UPI'));
-  const posOrders = delivered.filter(o => o.order_type === 'POS' || (o.qr_code_data && o.qr_code_data.order_type === 'POS'));
+  const safeRecords = Array.isArray(records) ? records.filter(Boolean) : [];
 
-  const totalRev = delivered.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
-  const onlineRev = onlineOrders.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
-  const posRev = posOrders.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
+  // Compute History Summary Stats safely (Lightweight & Record-Focused)
+  const delivered = safeRecords.filter(o => o && o.order_status === 'DELIVERED');
+  const cancelled = safeRecords.filter(o => o && o.order_status === 'CANCELLED');
+  const totalRev = delivered.reduce((sum, o) => {
+    const val = parseFloat(o?.total_amount || 0);
+    return sum + (isNaN(val) ? 0 : val);
+  }, 0);
 
   const statTotal = document.getElementById('history-stat-total');
   const statCount = document.getElementById('history-stat-count');
   const statDelivered = document.getElementById('history-stat-delivered-count');
   const statCancelled = document.getElementById('history-stat-cancelled-count');
-  const statOnline = document.getElementById('history-stat-online');
-  const statOnlineCount = document.getElementById('history-stat-online-count');
-  const statPos = document.getElementById('history-stat-pos');
-  const statPosCount = document.getElementById('history-stat-pos-count');
 
   if (statTotal) statTotal.innerText = `₹${totalRev.toFixed(2)}`;
-  if (statCount) statCount.innerText = records.length;
+  if (statCount) statCount.innerText = safeRecords.length;
   if (statDelivered) statDelivered.innerText = delivered.length;
   if (statCancelled) statCancelled.innerText = cancelled.length;
-  if (statOnline) statOnline.innerText = `₹${onlineRev.toFixed(2)}`;
-  if (statOnlineCount) statOnlineCount.innerText = onlineOrders.length;
-  if (statPos) statPos.innerText = `₹${posRev.toFixed(2)}`;
-  if (statPosCount) statPosCount.innerText = posOrders.length;
 
-  if (!records || records.length === 0) {
+  if (safeRecords.length === 0) {
     if (emptyEl)   emptyEl.classList.remove('hidden');
     if (wrapperEl) wrapperEl.classList.add('hidden');
+    if (tbody)     tbody.innerHTML = '';
+    if (window.lucide) lucide.createIcons();
     return;
   }
 
@@ -1775,28 +2387,63 @@ function renderHistoryTable(records) {
 
   if (!tbody) return;
 
-  tbody.innerHTML = records.map(o => {
+  tbody.innerHTML = safeRecords.map(o => {
+    if (!o) return '';
     const timeStr = formatOrderTimestamp(o.created_at);
-    const isPos = o.order_type === 'POS' || (o.qr_code_data && o.qr_code_data.order_type === 'POS');
-    const isGuest = !isPos && (!o.student_id || (o.students && o.students.reg_no === 'GUEST') || (o.qr_code_data && (o.qr_code_data.is_guest || o.qr_code_data.order_type === 'GUEST_ORDER')));
-    const studentName = isGuest 
-      ? (o.qr_code_data?.guest_name || o.students?.name || 'Guest User')
-      : (isPos ? 'Walk-in Counter POS' : (o.students?.name || 'Student Customer'));
-    const regNo = isGuest ? '(GUEST)' : (isPos ? '(POS)' : (o.students?.reg_no ? `(${o.students.reg_no})` : ''));
+    const isPos = isOrderFromPos(o);
+
+    // Extract student / guest info safely
+    let studentObj = null;
+    if (o.students) {
+      if (Array.isArray(o.students) && o.students[0]) studentObj = o.students[0];
+      else if (typeof o.students === 'object') studentObj = o.students;
+    }
+
+    let qrData = o.qr_code_data;
+    if (typeof qrData === 'string') {
+      try { qrData = JSON.parse(qrData); } catch(e) { qrData = null; }
+    }
+
+    const isGuest = !isPos && (!o.student_id || (studentObj && studentObj.reg_no === 'GUEST') || (qrData && (qrData.is_guest || qrData.order_type === 'GUEST_ORDER')));
+    
+    let studentName = 'Student Customer';
+    if (isGuest) {
+      studentName = (qrData && qrData.guest_name) || (studentObj && studentObj.name) || 'Guest User';
+    } else if (isPos) {
+      studentName = 'Walk-in Counter POS';
+    } else if (studentObj && studentObj.name) {
+      studentName = studentObj.name;
+    }
+
+    let regNo = '';
+    if (isGuest) regNo = '(GUEST)';
+    else if (isPos) regNo = '(POS)';
+    else if (studentObj && studentObj.reg_no) regNo = `(${studentObj.reg_no})`;
 
     const isPaid = o.payment_status === 'PAID';
     const isDelivered = o.order_status === 'DELIVERED';
     const isCancelled = o.order_status === 'CANCELLED';
-    const totalAmount = parseFloat(o.total_amount || 0).toFixed(2);
-    const paymentMode = o.payment_method === 'ONLINE' || (o.qr_code_data && o.qr_code_data.payment_mode === 'UPI') ? 'UPI' : 'CASH';
+    const parsedAmt = parseFloat(o.total_amount || 0);
+    const totalAmount = (isNaN(parsedAmt) ? 0 : parsedAmt).toFixed(2);
 
-    const itemsSummary = (o.order_items || []).map(oi => {
-      const pName = oi.products?.name || oi.name || 'Item';
-      return `${oi.quantity || 1}x ${pName}`;
+    const paymentMode = o.payment_method === 'ONLINE' || (qrData && qrData.payment_mode === 'UPI') ? 'UPI' : 'CASH';
+
+    const orderItemsList = Array.isArray(o.order_items) ? o.order_items : [];
+    const itemsSummary = orderItemsList.map(oi => {
+      if (!oi) return 'Item';
+      let prodName = 'Item';
+      if (oi.products) {
+        if (Array.isArray(oi.products) && oi.products[0]) prodName = oi.products[0].name || 'Item';
+        else if (typeof oi.products === 'object') prodName = oi.products.name || 'Item';
+      } else if (oi.name) {
+        prodName = oi.name;
+      }
+      const q = parseInt(oi.quantity) || 1;
+      return `${q}x ${prodName}`;
     }).join(', ') || 'Item';
 
     return `
-      <tr onclick="openOrderDetailModalByID('${o.id}')" class="border-b border-slate-800/40 hover:bg-slate-800/20 text-xs cursor-pointer transition-colors">
+      <tr onclick="openOrderDetailModalByID('${o.id || ''}')" class="border-b border-slate-800/40 hover:bg-slate-800/20 text-xs cursor-pointer transition-colors">
         <td class="py-3 pr-4 font-mono font-bold text-primary whitespace-nowrap">${o.token_number || '#TK'}</td>
         <td class="py-3 pr-4 whitespace-nowrap">
           <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isPos ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : (isGuest ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20')}">
@@ -1806,7 +2453,7 @@ function renderHistoryTable(records) {
         <td class="py-3 pr-4 font-semibold text-slate-200 truncate max-w-[150px]">
           ${studentName} <span class="text-slate-400 text-[10px] font-normal">${regNo}</span>
         </td>
-        <td class="py-3 pr-4 text-slate-300 truncate max-w-[200px]" title="${itemsSummary}">
+        <td class="py-3 pr-4 text-slate-300 truncate max-w-[200px]" title="${itemsSummary.replace(/"/g, '&quot;')}">
           ${itemsSummary}
         </td>
         <td class="py-3 pr-4 text-center whitespace-nowrap">
@@ -2055,6 +2702,9 @@ async function handlePosCheckout(paymentMode = 'CASH') {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         order_type: 'POS',
+        order_source: 'POS',
+        is_pos: true,
+        is_spot_sale: true,
         payment_method: paymentMode === 'UPI' ? 'ONLINE' : 'CASH_AT_COUNTER',
         payment_status: 'PAID',
         items

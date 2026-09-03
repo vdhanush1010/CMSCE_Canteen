@@ -668,6 +668,19 @@
             </div>
           </div>
 
+          <!-- 5-Minute Student Order Cancellation Window -->
+          <div id="confirm-cancel-section" class="pt-2 border-t border-slate-100 space-y-2">
+            <button id="confirm-cancel-btn" type="button" onclick="cancelStudentOrder()"
+              class="w-full py-2.5 px-4 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.98]">
+              <i data-lucide="x-circle" class="w-4 h-4 text-rose-600"></i>
+              <span id="confirm-cancel-btn-text">Cancel available (05:00)</span>
+            </button>
+            <div id="confirm-cancel-closed-msg" class="hidden text-center text-[11px] text-slate-400 font-semibold flex items-center justify-center gap-1.5 py-1">
+              <i data-lucide="lock" class="w-3.5 h-3.5 text-slate-400"></i>
+              <span>Cancellation window closed</span>
+            </div>
+          </div>
+
           <!-- Instructional Footer -->
           <p class="text-xs text-center text-text-secondary leading-relaxed px-2">
             Show this QR code at the canteen counter for scanning and receiving your order.

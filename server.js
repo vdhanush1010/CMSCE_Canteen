@@ -816,17 +816,19 @@ app.post('/api/payment/webhook', async (req, res) => {
 // 5. Place Order (Student & Guest Counter Orders)
 app.post('/api/orders', async (req, res) => {
   const { student_id, items, payment_method, payment_status, total_amount, payment_mode, order_type, guest_name } = req.body;
-  if (!items || !items.length || !total_amount) {
+  if (!items || !items.length) {
     return res.status(400).json({ error: "Missing required order details" });
   }
 
-  const isGuestOrder = !student_id || student_id === 'GUEST' || order_type === 'GUEST_ORDER';
-  const resolvedStudentId = isGuestOrder ? null : student_id;
-  const resolvedOrderType = isGuestOrder ? 'GUEST_ORDER' : (order_type || 'ONLINE_STUDENT');
+  const isPos = order_type === 'POS' || req.body.order_source === 'POS' || req.body.is_pos === true;
+  const isGuestOrder = !isPos && (!student_id || student_id === 'GUEST' || order_type === 'GUEST_ORDER');
+  const resolvedStudentId = (isGuestOrder || isPos) ? null : student_id;
+  const resolvedOrderType = isPos ? 'POS' : (isGuestOrder ? 'GUEST_ORDER' : (order_type || 'ONLINE_STUDENT'));
   const selectedMode = (payment_mode === 'UPI' || payment_method === 'ONLINE') ? 'UPI' : 'CASH';
   const method = selectedMode === 'UPI' ? 'ONLINE' : 'CASH_AT_COUNTER';
-  const pStatus = payment_status || 'PENDING';
-  const calculatedTotal = items.reduce((s, it) => s + (parseFloat(it.unit_price) * parseInt(it.quantity)), 0);
+  const pStatus = isPos ? 'PAID' : (payment_status || 'PENDING');
+  const calculatedTotal = items.reduce((s, it) => s + (parseFloat(it.unit_price || 0) * parseInt(it.quantity || 1)), 0);
+  const finalTotalAmount = parseFloat(total_amount) || calculatedTotal;
 
   try {
     // 1. Verify stock levels before inserting
@@ -842,15 +844,15 @@ app.post('/api/orders', async (req, res) => {
       }
     }
 
-    // 2. Insert into orders table (student_id is null for guest orders)
+    // 2. Insert into orders table (student_id is null for guest and POS orders)
     const { data: order, error: orderError } = await supabase
       .from('orders')
       .insert([{
         student_id: resolvedStudentId,
-        total_amount: calculatedTotal || total_amount,
+        total_amount: finalTotalAmount,
         payment_method: method,
         payment_status: pStatus,
-        order_status: 'PENDING_PICKUP'
+        order_status: isPos ? 'DELIVERED' : 'PENDING_PICKUP'
       }])
       .select()
       .single();
@@ -859,22 +861,37 @@ app.post('/api/orders', async (req, res) => {
 
     // 3. Update qr_code_data with payment_mode, order_type, guest info, and status
     const initialQrData = order.qr_code_data || {};
+    const finalToken = isPos
+      ? `#POS-${order.token_number ? order.token_number.replace(/^#[A-Z]+-/, '') : Math.floor(100 + Math.random() * 900)}`
+      : order.token_number;
+
     const updatedQrData = {
       ...initialQrData,
+      token_number: finalToken,
       order_type: resolvedOrderType,
+      order_source: isPos ? 'POS' : 'APP',
+      is_pos: isPos,
+      is_spot_sale: isPos,
       is_guest: isGuestOrder,
       guest_name: guest_name || (isGuestOrder ? 'Guest User' : null),
       payment_mode: selectedMode,
       payment_status: pStatus,
-      status: 'PENDING',
+      status: isPos ? 'DELIVERED' : 'PENDING',
       items: items.map(i => ({ product_id: i.product_id, quantity: i.quantity, unit_price: i.unit_price })),
-      total_amount: calculatedTotal || total_amount,
+      total_amount: finalTotalAmount,
       created_at: new Date().toISOString()
     };
 
+    const updatePayload = { qr_code_data: updatedQrData };
+    if (isPos) {
+      updatePayload.token_number = finalToken;
+      updatePayload.order_status = 'DELIVERED';
+      updatePayload.payment_status = 'PAID';
+    }
+
     await supabase
       .from('orders')
-      .update({ qr_code_data: updatedQrData })
+      .update(updatePayload)
       .eq('id', order.id);
 
     // 4. Insert items into order_items (triggers automated stock decrement)
@@ -927,6 +944,70 @@ app.post('/api/orders', async (req, res) => {
     console.error("Place order error:", err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// 5x. Student Order Cancellation (Strict 5-minute window)
+app.patch('/api/orders', async (req, res) => {
+  const { id, token, action } = req.body || {};
+  if (action === 'cancel') {
+    const lookup = id || token;
+    if (!lookup) return res.status(400).json({ success: false, error: 'Order ID or token is required' });
+
+    try {
+      let query = supabase.from('orders').select('*, order_items(*, products(*))');
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lookup);
+      if (isUUID) {
+        query = query.eq('id', lookup);
+      } else {
+        query = query.ilike('token_number', lookup);
+      }
+      const { data: order, error: fetchErr } = await query.maybeSingle();
+      if (fetchErr || !order) {
+        return res.status(404).json({ success: false, error: 'Order not found' });
+      }
+
+      if (order.order_status === 'DELIVERED') {
+        return res.status(400).json({ success: false, error: 'Delivered orders cannot be cancelled' });
+      }
+      if (order.order_status === 'CANCELLED') {
+        return res.status(400).json({ success: false, error: 'Order is already cancelled' });
+      }
+
+      const createdAt = order.created_at ? new Date(order.created_at).getTime() : Date.now();
+      const elapsedMs = Date.now() - createdAt;
+      const CANCELLATION_GRACE_PERIOD_MS = 5 * 60 * 1000;
+      if (elapsedMs > CANCELLATION_GRACE_PERIOD_MS) {
+        return res.status(400).json({ success: false, error: 'Cancellation window closed. Orders can only be cancelled within 5 minutes.' });
+      }
+
+      const qd = typeof order.qr_code_data === 'object' && order.qr_code_data !== null
+        ? { ...order.qr_code_data }
+        : {};
+      qd.status = 'CANCELLED';
+      qd.cancelled_at = new Date().toISOString();
+      qd.cancel_reason = 'Cancelled by student within 5-minute grace period';
+
+      const { data: updatedOrder, error: updateErr } = await supabase
+        .from('orders')
+        .update({
+          order_status: 'CANCELLED',
+          qr_code_data: qd
+        })
+        .eq('id', order.id)
+        .select('*, students(*), order_items(*, products(*))')
+        .single();
+
+      if (updateErr) throw updateErr;
+
+      // Restore stock
+      await restoreStockForItems(order.order_items || []);
+
+      return res.json({ success: true, data: updatedOrder });
+    } catch (err) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+  return res.status(400).json({ success: false, error: 'Invalid action' });
 });
 
 // 5b. Manager: Confirm Payment Received (Updates payment_status = 'PAID' and pushes order to kitchen queue)

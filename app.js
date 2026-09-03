@@ -1684,7 +1684,22 @@ async function verifyUpiAppPayment() {
     }
 
     const finalOrder = result.data;
-    processPaymentSuccess(finalOrder);
+
+    cart = {};
+    pendingOrderToken = "";
+    if (cashCountdownInterval) {
+      clearInterval(cashCountdownInterval);
+      cashCountdownInterval = null;
+    }
+    updateCartBadge();
+    updateCategoryFloatingBar();
+
+    if (!isGuest) {
+      orders.unshift(finalOrder);
+    }
+
+    closePaymentGatewayModal();
+    showConfirmationScreen(finalOrder);
   } catch (err) {
     showLoading(false);
     console.error("UPI verification error:", err);
@@ -1713,7 +1728,7 @@ async function placeOrder() {
     const guestName = isGuest ? (currentStudent?.name || 'Guest User') : null;
     const paymentMode = currentPaymentMode === 'UPI' ? 'UPI' : 'CASH';
     const paymentMethod = paymentMode === 'UPI' ? 'ONLINE' : 'CASH_AT_COUNTER';
-    const paymentStatus = paymentMode === 'UPI' ? 'PAID' : 'PENDING';
+    const paymentStatus = 'PENDING';
 
     const res = await fetch('/api/orders', {
       method: 'POST',
@@ -1751,7 +1766,7 @@ async function placeOrder() {
       orders.unshift(finalOrder);
     }
 
-    showOrderConfirmation(finalOrder);
+    showConfirmationScreen(finalOrder);
   } catch (err) {
     showLoading(false);
     console.error("Place order error:", err);
@@ -1759,22 +1774,51 @@ async function placeOrder() {
   }
 }
 
+function showOrderConfirmation(orderData) {
+  showConfirmationScreen(orderData);
+}
+
+function processPaymentSuccess(orderData) {
+  closePaymentGatewayModal();
+  showConfirmationScreen(orderData);
+}
+
+let currentConfirmationOrder = null;
+let cancelCountdownInterval = null;
+
 function showConfirmationScreen(orderData) {
   if (!orderData) return;
 
-  // Clear any existing QR countdown timer
+  currentConfirmationOrder = orderData;
+
+  // Clear any existing QR countdown timer & cancel timer
   if (qrCountdownInterval) {
     clearInterval(qrCountdownInterval);
     qrCountdownInterval = null;
   }
+  if (cancelCountdownInterval) {
+    clearInterval(cancelCountdownInterval);
+    cancelCountdownInterval = null;
+  }
 
-  const isCash = orderData.payment_method === 'CASH_AT_COUNTER';
-  const isPaid = orderData.payment_status === 'PAID' || orderData.payment_method === 'ONLINE';
+  // Extract payment mode ('CASH' vs 'UPI')
+  let paymentMode = 'CASH';
+  if (orderData.qr_code_data) {
+    try {
+      const qd = typeof orderData.qr_code_data === 'string' ? JSON.parse(orderData.qr_code_data) : orderData.qr_code_data;
+      if (qd?.payment_mode) paymentMode = qd.payment_mode;
+      else if (orderData.payment_method === 'ONLINE') paymentMode = 'UPI';
+    } catch(e) {}
+  } else if (orderData.payment_method === 'ONLINE') {
+    paymentMode = 'UPI';
+  }
+
+  const isPaid = orderData.payment_status === 'PAID';
   const orderCreatedAt = orderData.created_at ? new Date(orderData.created_at).getTime() : Date.now();
   const elapsedSeconds = Math.floor((Date.now() - orderCreatedAt) / 1000);
   let remainingSeconds = CASH_EXPIRY_WINDOW_SECONDS - elapsedSeconds;
 
-  const isExpired = orderData.order_status === 'CANCELLED' || (!isPaid && isCash && remainingSeconds <= 0);
+  const isExpired = orderData.order_status === 'CANCELLED' || (!isPaid && remainingSeconds <= 0);
 
   // ── 1. Header titles & Expired Alert / Countdown bar ─────
   const titleEl = document.getElementById('confirm-screen-title');
@@ -1785,26 +1829,39 @@ function showConfirmationScreen(orderData) {
   const statusBadge = document.getElementById('confirm-status-badge');
   const qrCaption = document.getElementById('confirm-qr-caption');
 
+  if (timerBar) {
+    const timerLabel = timerBar.querySelector('span');
+    if (timerLabel) {
+      timerLabel.innerHTML = `<i data-lucide="clock" class="w-4 h-4 text-amber-600"></i> ${paymentMode === 'UPI' ? 'UPI' : 'Cash'} Payment Window:`;
+    }
+  }
+
   if (isExpired) {
-    if (titleEl) titleEl.innerText = "Order Expired";
-    if (subtitleEl) subtitleEl.innerText = "Cash payment window has closed";
+    if (titleEl) titleEl.innerText = "Order Expired / Cancelled";
+    if (subtitleEl) subtitleEl.innerText = orderData.order_status === 'CANCELLED'
+      ? "This order has been cancelled and stock released"
+      : `${paymentMode === 'UPI' ? 'UPI' : 'Cash'} payment window has closed`;
     if (expiryAlert) expiryAlert.classList.remove('hidden');
     if (timerBar) timerBar.classList.add('hidden');
     if (statusBadge) {
       statusBadge.className = "inline-flex items-center gap-1 bg-red-50 text-red-700 text-[10px] font-bold px-2 py-0.5 rounded border border-red-200 mt-1";
-      statusBadge.innerText = "❌ Expired / Cancelled";
+      statusBadge.innerText = orderData.order_status === 'CANCELLED' ? "❌ Cancelled" : "❌ Expired / Cancelled";
     }
-    if (qrCaption) qrCaption.innerText = "Order Expired — Token Inactive";
-  } else if (isCash && !isPaid) {
+    if (qrCaption) qrCaption.innerText = "Order Inactive — Token Void";
+  } else if (!isPaid) {
     if (titleEl) titleEl.innerText = "Order Placed Successfully!";
-    if (subtitleEl) subtitleEl.innerText = "Pay at counter within 30 minutes";
+    if (subtitleEl) subtitleEl.innerText = paymentMode === 'UPI'
+      ? "Scan UPI QR at counter within 30 minutes"
+      : "Pay cash at counter within 30 minutes";
     if (expiryAlert) expiryAlert.classList.add('hidden');
     if (timerBar) timerBar.classList.remove('hidden');
     if (statusBadge) {
       statusBadge.className = "inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200 mt-1";
-      statusBadge.innerText = "⏳ Pending Cash Payment";
+      statusBadge.innerText = paymentMode === 'UPI' ? "⏳ Pending UPI Payment" : "⏳ Pending Cash Payment";
     }
-    if (qrCaption) qrCaption.innerText = "Show token at counter to pay & receive";
+    if (qrCaption) qrCaption.innerText = paymentMode === 'UPI'
+      ? "Show token at counter to scan UPI QR & receive"
+      : "Show token at counter to pay cash & receive";
 
     // Start live countdown timer on confirmation screen
     const updateCountdown = () => {
@@ -1847,6 +1904,64 @@ function showConfirmationScreen(orderData) {
     if (qrCaption) qrCaption.innerText = "Verification QR Signature Verified";
   }
 
+  // ── 1b. 5-Minute Student Order Cancellation Window ───────
+  const cancelSection = document.getElementById('confirm-cancel-section');
+  const cancelBtn = document.getElementById('confirm-cancel-btn');
+  const cancelBtnText = document.getElementById('confirm-cancel-btn-text');
+  const cancelClosedMsg = document.getElementById('confirm-cancel-closed-msg');
+
+  const CANCELLATION_WINDOW_SECONDS = 5 * 60; // 300 seconds
+  const isTerminalStatus = orderData.order_status === 'DELIVERED' || orderData.order_status === 'CANCELLED';
+
+  if (cancelSection) {
+    if (isTerminalStatus) {
+      cancelSection.classList.add('hidden');
+    } else {
+      cancelSection.classList.remove('hidden');
+
+      const updateCancelCountdown = () => {
+        const nowElapsed = Math.floor((Date.now() - orderCreatedAt) / 1000);
+        const remCancel = Math.max(0, CANCELLATION_WINDOW_SECONDS - nowElapsed);
+        const cMins = Math.floor(remCancel / 60);
+        const cSecs = remCancel % 60;
+        const timeStr = `${String(cMins).padStart(2, '0')}:${String(cSecs).padStart(2, '0')}`;
+
+        if (remCancel > 0) {
+          if (cancelBtn) {
+            cancelBtn.classList.remove('hidden');
+            cancelBtn.disabled = false;
+          }
+          if (cancelBtnText) {
+            cancelBtnText.innerText = `Cancel available (${timeStr})`;
+          }
+          if (cancelClosedMsg) {
+            cancelClosedMsg.classList.add('hidden');
+          }
+        } else {
+          if (cancelCountdownInterval) {
+            clearInterval(cancelCountdownInterval);
+            cancelCountdownInterval = null;
+          }
+          if (cancelBtn) {
+            cancelBtn.classList.add('hidden');
+            cancelBtn.disabled = true;
+          }
+          if (cancelClosedMsg) {
+            cancelClosedMsg.classList.remove('hidden');
+            cancelClosedMsg.innerHTML = `<i data-lucide="lock" class="w-3.5 h-3.5 text-slate-400"></i> <span>Cancellation window closed</span>`;
+            if (window.lucide) lucide.createIcons();
+          }
+        }
+      };
+
+      updateCancelCountdown();
+      const initialElapsed = Math.floor((Date.now() - orderCreatedAt) / 1000);
+      if (initialElapsed < CANCELLATION_WINDOW_SECONDS) {
+        cancelCountdownInterval = setInterval(updateCancelCountdown, 1000);
+      }
+    }
+  }
+
   // ── 2. Populate token number ────────────────────────────
   const isGuest = (currentStudent && currentStudent.isGuest) || (orderData.qr_code_data && (orderData.qr_code_data.is_guest || orderData.qr_code_data.order_type === 'GUEST_ORDER')) || !orderData.student_id;
   const tokenEl = document.getElementById('confirm-token-number');
@@ -1875,10 +1990,18 @@ function showConfirmationScreen(orderData) {
   // ── 3. Payment badge ────────────────────────────────────
   const paymentBadge = document.getElementById('confirm-payment-badge');
   if (paymentBadge) {
-    paymentBadge.innerText = isPaid ? '✅ PAID (Online)' : '💵 Cash at Counter';
-    paymentBadge.className = isPaid
-      ? 'inline-flex items-center gap-1 bg-green-50 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded border border-green-200 mt-1'
-      : 'inline-flex items-center gap-1 bg-orange-50 text-orange-700 text-[10px] font-bold px-2 py-0.5 rounded border border-orange-200 mt-1';
+    if (isPaid) {
+      paymentBadge.innerText = paymentMode === 'UPI' ? '✅ PAID (UPI)' : '✅ PAID (Cash)';
+      paymentBadge.className = 'inline-flex items-center gap-1 bg-green-50 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded border border-green-200 mt-1';
+    } else {
+      if (paymentMode === 'UPI') {
+        paymentBadge.innerText = '📱 Expected: UPI QR';
+        paymentBadge.className = 'inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-200 mt-1';
+      } else {
+        paymentBadge.innerText = '💵 Expected: Cash';
+        paymentBadge.className = 'inline-flex items-center gap-1 bg-orange-50 text-orange-700 text-[10px] font-bold px-2 py-0.5 rounded border border-orange-200 mt-1';
+      }
+    }
   }
 
   // ── 4. Order items summary ──────────────────────────────
@@ -1978,6 +2101,61 @@ function generateAndShowQR(containerId, orderData, isExpired = false) {
   }
 }
 
+async function cancelStudentOrder() {
+  if (!currentConfirmationOrder) return;
+  const orderId = currentConfirmationOrder.id;
+  const token = currentConfirmationOrder.token_number;
+
+  const orderCreatedAt = currentConfirmationOrder.created_at ? new Date(currentConfirmationOrder.created_at).getTime() : Date.now();
+  const elapsedSeconds = Math.floor((Date.now() - orderCreatedAt) / 1000);
+  if (elapsedSeconds > 300) {
+    showToast("Cancellation window closed. Orders can only be cancelled within 5 minutes.", "error");
+    return;
+  }
+
+  const confirmed = confirm(`Are you sure you want to cancel Order ${token || ''}?\n\nStock will be released and your order will be cancelled.`);
+  if (!confirmed) return;
+
+  showLoading(true);
+  try {
+    const res = await fetch('/api/orders', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: orderId,
+        token: token,
+        action: 'cancel'
+      })
+    });
+
+    const result = await res.json();
+    showLoading(false);
+
+    if (!res.ok || !result.success) {
+      showToast(result.error || "Failed to cancel order", "error");
+      return;
+    }
+
+    showToast(`Order ${token || ''} cancelled. Inventory restored.`, "success");
+
+    if (cancelCountdownInterval) {
+      clearInterval(cancelCountdownInterval);
+      cancelCountdownInterval = null;
+    }
+    if (qrCountdownInterval) {
+      clearInterval(qrCountdownInterval);
+      qrCountdownInterval = null;
+    }
+
+    await fetchStudentOrders();
+    showConfirmationScreen(result.data);
+  } catch (err) {
+    showLoading(false);
+    console.error("Cancel order error:", err);
+    showToast("Network error while cancelling order.", "error");
+  }
+}
+
 // ─────────────────────────────────────────────────────────
 // resetAndGoHome()
 // Wired to the "Back to Home" button on the QR screen.
@@ -1987,6 +2165,10 @@ function resetAndGoHome() {
   if (qrCountdownInterval) {
     clearInterval(qrCountdownInterval);
     qrCountdownInterval = null;
+  }
+  if (cancelCountdownInterval) {
+    clearInterval(cancelCountdownInterval);
+    cancelCountdownInterval = null;
   }
 
   // Reset UPI checkbox and UTR field if they exist
@@ -2027,11 +2209,10 @@ function renderCartHistoryView() {
   const now = Date.now();
 
   container.innerHTML = userOrders.map(o => {
-    const isCash = o.payment_method === 'CASH_AT_COUNTER';
-    const isPaid = o.payment_status === 'PAID' || o.payment_method === 'ONLINE';
+    const isPaid = o.payment_status === 'PAID';
     const orderCreatedAt = o.created_at ? new Date(o.created_at).getTime() : now;
     const isPast30Min = (now - orderCreatedAt) > (CASH_EXPIRY_WINDOW_SECONDS * 1000);
-    const isOrderExpired = o.order_status === 'CANCELLED' || (!isPaid && isCash && isPast30Min);
+    const isOrderExpired = o.order_status === 'CANCELLED' || (!isPaid && isPast30Min);
 
     let statusBadge = "";
     if (isOrderExpired) {
@@ -2046,7 +2227,7 @@ function renderCartHistoryView() {
         </div>
       `;
     } else if (o.order_status === "PENDING_PICKUP" || o.order_status === "PENDING") {
-      const remMins = isCash && !isPaid ? Math.max(1, Math.ceil((CASH_EXPIRY_WINDOW_SECONDS * 1000 - (now - orderCreatedAt)) / 60000)) : null;
+      const remMins = !isPaid ? Math.max(1, Math.ceil((CASH_EXPIRY_WINDOW_SECONDS * 1000 - (now - orderCreatedAt)) / 60000)) : null;
       statusBadge = `
         <div class="flex items-center justify-between w-full mt-2 pt-2 border-t border-slate-100/50">
           <span class="inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-xs font-bold px-2.5 py-1 rounded-lg border border-amber-200">
