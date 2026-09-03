@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hostel Canteen - Student Ordering</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Custom Tailwind Config mapping to design tokens -->
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: {
+              DEFAULT: '#00D28A',
+              dark: '#00A36C',
+            },
+            secondary: {
+              DEFAULT: '#FF6B5B',
+            },
+            warning: {
+              DEFAULT: '#FFA801',
+            },
+            background: '#F4FAF7',
+            surface: '#FFFFFF',
+            text: {
+              primary: '#1E293B',
+              secondary: '#64748B',
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'Poppins', 'sans-serif'],
+          },
+          boxShadow: {
+            subtle: '0px 4px 12px rgba(0, 0, 0, 0.05)',
+            premium: '0px 8px 24px rgba(0, 210, 138, 0.12)',
+            cardHover: '0px 12px 28px rgba(0, 0, 0, 0.08)',
+          },
+          borderRadius: {
+            card: '16px',
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Custom index.css styles -->
+  <link rel="stylesheet" href="index.css">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- QR Code Library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <!-- Supabase JS SDK CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Razorpay Checkout SDK -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+</head>
+
+<body>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay"
+    class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[2000] flex flex-col items-center justify-center hidden">
+    <div class="bg-white p-6 rounded-2xl shadow-premium flex flex-col items-center gap-3">
+      <div class="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+      <p class="text-xs font-bold text-text-primary">Syncing Canteen Cloud...</p>
+    </div>
+  </div>
+
+  <!-- App Container Simulating Mobile Device -->
+  <div id="app-container" class="relative overflow-hidden bg-background">
+
+    <!-- Toast Notifications Container -->
+    <div id="toast-container"></div>
+
+    <!-- Navigation Drawer Overlay -->
+    <div id="drawer-overlay" onclick="toggleDrawer(false)"></div>
+
+    <!-- Navigation Drawer -->
+    <div id="drawer" class="flex flex-col">
+      <!-- Profile Header -->
+      <div class="p-6 bg-gradient-to-br from-primary to-primary-dark text-white rounded-br-[24px]">
+        <div class="flex items-center gap-4 mb-2">
+          <div
+            class="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center font-bold text-lg text-white border border-white/30 overflow-hidden"
+            id="drawer-avatar">
+            U
+          </div>
+          <div>
+            <h4 class="font-bold text-base" id="drawer-student-name">Loading...</h4>
+            <p class="text-xs text-white/80" id="drawer-student-reg">2026CSE001</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Links -->
+      <div class="flex-1 px-4 py-6 space-y-2">
+        <a href="#"
+          class="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-background text-text-primary font-medium text-sm transition-colors"
+          onclick="toggleDrawer(false); showScreen('home-screen')">
+          <i data-lucide="home" class="w-5 h-5 text-primary-dark"></i> Home Dashboard
+        </a>
+        <a href="#"
+          class="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-background text-text-primary font-medium text-sm transition-colors"
+          onclick="showProfileScreen()">
+          <i data-lucide="user" class="w-5 h-5 text-primary-dark"></i> Profile Details
+        </a>
+        <a href="#" id="drawer-my-orders-btn"
+          class="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-background text-text-primary font-medium text-sm transition-colors"
+          onclick="showOrdersHistory()">
+          <i data-lucide="shopping-bag" class="w-5 h-5 text-primary-dark"></i> My Orders
+        </a>
+        <a href="#"
+          class="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-background text-text-primary font-medium text-sm transition-colors"
+          onclick="toggleDrawer(false); showNoticesHistory()">
+          <i data-lucide="bell" class="w-5 h-5 text-primary-dark"></i> Notifications
+        </a>
+        <a href="#"
+          class="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-background text-text-primary font-medium text-sm transition-colors"
+          onclick="showToast('Contact Support: support@canteen.edu', 'success')">
+          <i data-lucide="help-circle" class="w-5 h-5 text-primary-dark"></i> Help & Support
+        </a>
+      </div>
+
+      <!-- Footer logout -->
+      <div class="p-6 border-t border-slate-100">
+        <button onclick="handleLogout()"
+          class="w-full flex items-center justify-center gap-2 py-3 border border-secondary text-secondary font-bold text-sm rounded-xl hover:bg-red-50 active:scale-98 transition-all">
+          <i data-lucide="log-out" class="w-4 h-4"></i> Sign Out
+        </button>
+      </div>
+    </div>
+
+
+    <!-- ==================== SCREEN 1: AUTHENTICATION (LOGIN / REGISTER) ==================== -->
+    <div id="login-screen" class="screen p-6 justify-center">
+      <div class="mb-8 text-center">
+        <div
+          class="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-primary/20">
+          <i data-lucide="utensils-crosskey" class="w-8 h-8 text-primary-dark"></i>
+        </div>
+        <h2 class="text-2xl font-bold font-poppins text-text-primary cursor-pointer"
+          onclick="showScreen('home-screen')">Canteen Hub</h2>
+        <p class="text-xs text-text-secondary mt-1">Hostel Student Ordering Portal</p>
+      </div>
+
+      <!-- Tab Controls -->
+      <div class="flex border-b border-slate-200 mb-6">
+        <div id="tab-login-btn" class="auth-tab active flex-1 text-center pb-2 text-sm"
+          onclick="switchAuthTab('login')">Login</div>
+        <div id="tab-register-btn" class="auth-tab flex-1 text-center pb-2 text-sm" onclick="switchAuthTab('register')">
+          Register</div>
+      </div>
+
+      <!-- Login Tab View -->
+      <form id="form-login" class="space-y-4" onsubmit="handleLoginSubmit(event)">
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1.5 uppercase">Register Number</label>
+          <div class="relative">
+            <i data-lucide="hash" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="text" id="login-reg-no" required placeholder="e.g. 2026CSE001"
+              class="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="block text-xs font-semibold text-text-secondary uppercase">Password</label>
+            <a href="#" onclick="openForgotPasswordModal(event)"
+              class="text-[11px] font-bold text-primary hover:text-primary-dark hover:underline transition-colors">Forgot
+              Password?</a>
+          </div>
+          <div class="relative">
+            <i data-lucide="lock" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="password" id="login-password" required placeholder="Enter password"
+              class="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+            <span class="pwd-toggle" onclick="togglePasswordVisibility('login-password', this)">
+              <i data-lucide="eye" class="w-4 h-4"></i>
+            </span>
+          </div>
+        </div>
+        <button type="submit" class="w-full btn-primary mt-6">
+          <i data-lucide="log-in" class="w-5 h-5"></i> Login Account
+        </button>
+      </form>
+
+      <!-- Register Tab View (Hidden by default) -->
+      <form id="form-register" class="space-y-3.5 hidden" onsubmit="handleRegisterSubmit(event)">
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Full Name <span
+              class="text-rose-500 font-bold">*</span></label>
+          <div class="relative">
+            <i data-lucide="user" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="text" id="reg-name" required placeholder="Your full name"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Register Number <span
+              class="text-rose-500 font-bold">*</span></label>
+          <div class="relative">
+            <i data-lucide="hash" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="text" id="reg-no" required placeholder="e.g. 2026CSE001"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Mobile Number <span
+              class="text-rose-500 font-bold">* (Strict 10 Digits)</span></label>
+          <div class="relative">
+            <i data-lucide="phone" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="tel" id="reg-phone" required maxlength="10" placeholder="10-digit mobile number"
+              oninput="this.value = this.value.replace(/\D/g, '')"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Email Address <span
+              class="text-slate-400 lowercase font-normal">(Optional)</span></label>
+          <div class="relative">
+            <i data-lucide="mail" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="email" id="reg-email" placeholder="e.g. student@college.edu"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Department <span
+              class="text-rose-500 font-bold">*</span></label>
+          <div class="relative">
+            <i data-lucide="graduation-cap" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="text" id="reg-dept" required placeholder="e.g. Computer Science"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Date of Birth <span
+              class="text-rose-500 font-bold">*</span></label>
+          <div class="relative">
+            <i data-lucide="calendar" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="date" id="reg-dob" required
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Password <span
+              class="text-rose-500 font-bold">*</span></label>
+          <div class="relative">
+            <i data-lucide="lock" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+            <input type="password" id="reg-password" required placeholder="Minimum 6 characters"
+              class="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+            <span class="pwd-toggle" onclick="togglePasswordVisibility('reg-password', this)">
+              <i data-lucide="eye" class="w-4 h-4"></i>
+            </span>
+          </div>
+        </div>
+        <button type="submit" class="w-full btn-primary mt-4">
+          <i data-lucide="user-plus" class="w-5 h-5"></i> Create Account
+        </button>
+      </form>
+
+      <!-- Instant Guest Order (Skip Login) Section -->
+      <div class="relative my-5 flex items-center justify-center">
+        <div class="border-t border-slate-200 w-full"></div>
+        <span class="bg-surface px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider relative">or</span>
+      </div>
+
+      <button type="button" onclick="startGuestSession()" id="btn-guest-order"
+        class="w-full py-3.5 px-4 bg-gradient-to-r from-amber-500/10 via-amber-500/15 to-amber-500/10 hover:from-amber-500/20 hover:to-amber-500/20 border-2 border-amber-500/30 text-amber-800 font-black text-sm rounded-2xl transition-all flex items-center justify-center gap-2.5 shadow-sm active:scale-98">
+        <i data-lucide="zap" class="w-5 h-5 text-amber-600 animate-pulse"></i>
+        <span>⚡ Order as Guest (No Login Required)</span>
+      </button>
+      <p class="text-center text-[11px] text-slate-400 mt-2 font-medium">Instant table ordering &bull; Pay at counter or
+        online</p>
+    </div>
+
+
+    <!-- ==================== SCREEN 2: HOME DASHBOARD ==================== -->
+    <div id="home-screen" class="screen">
+      <!-- Top Header Bar -->
+      <div
+        class="px-6 pt-6 pb-4 bg-white flex items-center justify-between shadow-[0_2px_10px_rgba(0,0,0,0.02)] border-b border-slate-100">
+        <button onclick="toggleDrawer(true)"
+          class="p-2 -ml-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-transform">
+          <i data-lucide="menu" class="w-6 h-6 text-text-primary"></i>
+        </button>
+
+        <!-- Search bar -->
+        <div class="flex-1 mx-3 relative">
+          <input type="text" id="home-search-input" onkeyup="handleHomeSearch(this.value)"
+            placeholder="Search food, items..."
+            class="w-full pl-9 pr-8 py-2 rounded-xl bg-slate-50 border border-slate-100 text-xs focus:outline-none focus:border-primary/50 transition-colors">
+          <i data-lucide="search" class="w-3.5 h-3.5 absolute left-3 top-3 text-slate-400"></i>
+          <button class="absolute right-2.5 top-2 text-slate-400 hover:text-primary-dark" onclick="startVoiceSearch()">
+            <i data-lucide="mic" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+
+        <!-- My Orders Top Navbar Button -->
+        <button id="navMyOrdersBtn" onclick="showOrdersHistory()"
+          class="p-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-transform relative mr-1" title="My Orders">
+          <i data-lucide="receipt" class="w-6 h-6 text-text-primary"></i>
+        </button>
+
+        <button onclick="showNoticesHistory()"
+          class="p-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-transform relative mr-1.5">
+          <i data-lucide="bell" class="w-6 h-6 text-text-primary"></i>
+          <span id="notice-badge"
+            class="absolute -top-1 -right-1 bg-amber-500 text-white text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center border-2 border-white hidden">0</span>
+        </button>
+
+        <button onclick="navigateToCart()"
+          class="p-2 -mr-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-transform relative">
+          <i data-lucide="shopping-cart" class="w-6 h-6 text-text-primary"></i>
+          <span id="cart-badge"
+            class="absolute -top-1 -right-1 bg-secondary text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border-2 border-white scale-0 transition-transform">0</span>
+        </button>
+      </div>
+
+      <!-- Main Scrollable Area -->
+      <div class="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+
+        <!-- Dynamic Announcement Banner -->
+        <div id="announcement-banner"
+          class="hidden p-4 bg-amber-50 border border-amber-200 rounded-2xl flex gap-3 items-start shadow-sm transition-all animate-pulse">
+          <i data-lucide="megaphone" class="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5 animate-bounce"></i>
+          <div class="flex-1 min-w-0">
+            <h4 id="announcement-title" class="text-xs font-bold text-amber-800 truncate">New Announcement</h4>
+            <p id="announcement-message" class="text-[10px] text-amber-700 mt-1 leading-relaxed">Broadcast message will
+              appear here.</p>
+          </div>
+          <button onclick="dismissAnnouncement()" class="text-amber-500 hover:text-amber-700 font-bold text-xs p-1">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <!-- Canteen Closed Banner -->
+        <div id="canteen-closed-banner"
+          class="hidden p-4 bg-rose-50 border border-rose-200 rounded-2xl flex gap-3 items-start shadow-sm transition-all">
+          <i data-lucide="alert-octagon" class="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5 animate-pulse"></i>
+          <div class="flex-1 min-w-0">
+            <h4 class="text-xs font-bold text-rose-800">Canteen is CLOSED</h4>
+            <p class="text-[10px] text-rose-700 mt-1 leading-relaxed">Canteen is currently closed for orders. Please
+              check back later!</p>
+          </div>
+        </div>
+
+        <!-- Live Status Banner -->
+        <div class="p-4 bg-white card-premium flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <img src="logo.png" alt="Campus Logo" class="student-canteen-logo" />
+            <div>
+              <h3 class="font-bold text-sm text-text-primary">CMSCE Canteen</h3>
+              <p class="text-xs text-text-secondary">In College Campus</p>
+            </div>
+          </div>
+          <span class="badge-status" id="canteen-status-badge">
+            <span class="w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></span>
+            🟢 Open Now
+          </span>
+        </div>
+
+        <!-- Search Results Container (Hidden by default) -->
+        <div id="search-results-wrapper" class="hidden space-y-4">
+          <div class="flex justify-between items-center mb-1">
+            <h3 class="font-bold text-sm font-poppins text-text-primary">Search Results</h3>
+            <button onclick="clearSearch()" class="text-xs text-secondary font-semibold">Clear</button>
+          </div>
+          <div id="search-results-list" class="space-y-4">
+            <!-- Dynamically populated product cards -->
+          </div>
+        </div>
+
+        <!-- Default Content Wrapper -->
+        <div id="home-main-content" class="space-y-6">
+          <!-- Frequently Bought Widget -->
+          <div id="frequent-widget-container">
+            <div class="flex justify-between items-center mb-3">
+              <h3 class="font-bold text-sm font-poppins text-text-primary">Frequently Ordered</h3>
+              <span class="text-xs text-primary-dark font-semibold">Single-Tap Quick Add</span>
+            </div>
+            <div class="flex gap-4 overflow-x-auto pb-2 -mx-6 px-6 snap-x" id="frequent-list">
+              <!-- Populated via JS -->
+            </div>
+          </div>
+
+          <!-- Category Grid -->
+          <div>
+            <h3 class="font-bold text-sm font-poppins text-text-primary mb-3">Browse Categories</h3>
+            <div class="categories-grid" id="categories-list">
+              <!-- Populated via JS -->
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+
+    <!-- ==================== SCREEN 3: PRODUCT LISTING BY CATEGORY ==================== -->
+    <div id="category-screen" class="screen">
+      <!-- Top Header -->
+      <div class="px-6 pt-6 pb-4 bg-white flex items-center justify-between border-b border-slate-100">
+        <div class="flex items-center gap-2">
+          <button onclick="showScreen('home-screen')"
+            class="p-2 -ml-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-transform">
+            <i data-lucide="chevron-left" class="w-6 h-6 text-text-primary"></i>
+          </button>
+          <h2 id="category-title" class="font-bold text-base font-poppins text-text-primary cursor-pointer"
+            onclick="showScreen('home-screen')">Category Name</h2>
+        </div>
+
+        <!-- Sorting Filter -->
+        <select id="sort-select" onchange="handleSortChange(this.value)" class="filter-select">
+          <option value="default">Default</option>
+          <option value="price-asc">Price: Low to High</option>
+          <option value="price-desc">Price: High to Low</option>
+          <option value="popularity">Popularity</option>
+        </select>
+      </div>
+
+      <!-- Product List container -->
+      <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4" id="category-products-list">
+        <!-- Cards generated dynamically -->
+      </div>
+
+      <!-- Bottom Floating Cart Bar -->
+      <div id="category-floating-bar"
+        class="bottom-floating-bar hidden absolute bottom-0 left-0 w-full px-6 py-4 flex items-center justify-between shadow-[0_-8px_20px_rgba(0,0,0,0.05)] rounded-t-[20px] z-20">
+        <div>
+          <p class="text-xs text-text-secondary"><span id="floating-cart-count"
+              class="font-bold text-text-primary">0</span> items selected</p>
+          <p class="text-lg font-extrabold text-primary-dark">₹<span id="floating-cart-total">0.00</span></p>
+        </div>
+        <button class="btn-primary py-3 px-6" onclick="navigateToCart()">
+          View Cart <i data-lucide="arrow-right" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </div>
+
+
+    <!-- ==================== SCREEN 4: CART & CHECKOUT ==================== -->
+    <div id="cart-screen" class="screen flex flex-col h-full">
+      <!-- Header -->
+      <div class="px-6 pt-6 pb-4 bg-white flex items-center justify-between border-b border-slate-100 flex-shrink-0">
+        <div class="flex items-center gap-2">
+          <button onclick="showScreen('home-screen')"
+            class="flex items-center gap-1 text-xs font-bold text-text-secondary hover:text-text-primary transition-colors py-1.5 px-3 bg-slate-50 rounded-xl border border-slate-100">
+            <i data-lucide="chevron-left" class="w-4 h-4"></i> Back to Menu
+          </button>
+        </div>
+        <h2 class="font-bold text-base font-poppins text-text-primary cursor-pointer"
+          onclick="showScreen('home-screen')">My Basket</h2>
+      </div>
+
+      <!-- Quick-Toggle Tabs -->
+      <div class="flex border-b border-slate-100 bg-white flex-shrink-0">
+        <button id="cart-tab-current"
+          class="flex-1 py-3 text-center text-sm font-bold border-b-2 border-primary text-primary transition-all"
+          onclick="switchCartTab('current')">
+          Current Cart
+        </button>
+        <button id="cart-tab-history"
+          class="flex-1 py-3 text-center text-sm font-semibold border-b-2 border-transparent text-text-secondary transition-all"
+          onclick="switchCartTab('history')">
+          Order History
+        </button>
+      </div>
+
+      <!-- VIEW A: CURRENT CART -->
+      <div id="cart-current-view" class="flex-1 flex flex-col min-h-0">
+        <!-- Cart content or empty state -->
+        <div class="flex-1 overflow-y-auto p-6 space-y-6" id="cart-content-area">
+          <!-- Dynamic Cart Items List -->
+          <div class="space-y-3" id="cart-items-list"></div>
+
+          <!-- Payment Mode Section -->
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="font-bold text-sm font-poppins text-text-primary">Counter Payment Mode</h3>
+              <span class="text-[10px] bg-slate-100 text-slate-600 font-bold px-2 py-0.5 rounded-full">Pay at
+                Counter</span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3" id="payment-options-grid">
+              <!-- Option A: 💵 Pay Cash at Counter (value: 'CASH') - Default -->
+              <label
+                class="card-premium p-4 flex flex-col justify-between cursor-pointer border-2 border-emerald-500 bg-emerald-500/[0.04] relative transition-all"
+                id="payment-cash-card">
+                <input type="radio" name="payment-mode" value="CASH" checked class="hidden"
+                  onchange="togglePaymentSelection('CASH')">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20"
+                    id="cash-indicator"></span>
+                  <i data-lucide="banknote" class="w-4 h-4 text-emerald-600"></i>
+                </div>
+                <div>
+                  <p class="font-bold text-xs text-text-primary">💵 Pay Cash at Counter</p>
+                  <p class="text-[10px] text-text-secondary mt-0.5">Pay currency at counter</p>
+                </div>
+              </label>
+
+              <!-- Option B: 📱 Scan UPI QR at Counter (value: 'UPI') -->
+              <label
+                class="card-premium p-4 flex flex-col justify-between cursor-pointer border-2 border-slate-100 bg-white relative transition-all"
+                id="payment-upi-card">
+                <input type="radio" name="payment-mode" value="UPI" class="hidden"
+                  onchange="togglePaymentSelection('UPI')">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="w-2.5 h-2.5 rounded-full bg-slate-300" id="upi-indicator"></span>
+                  <i data-lucide="smartphone" class="w-4 h-4 text-blue-500"></i>
+                </div>
+                <div>
+                  <p class="font-bold text-xs text-text-primary">📱 Scan UPI QR at Counter</p>
+                  <p class="text-[10px] text-text-secondary mt-0.5">Scan UPI QR upon pickup</p>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Dynamic Notice Info Banner -->
+          <div id="payment-info-banner"
+            class="p-3.5 bg-emerald-50/80 border border-emerald-200/80 rounded-2xl flex items-start gap-2.5">
+            <i data-lucide="banknote" id="payment-banner-icon"
+              class="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5"></i>
+            <div>
+              <h4 id="payment-banner-title" class="text-xs font-bold text-emerald-900">Cash Payment at Counter</h4>
+              <p id="payment-banner-desc" class="text-[10px] text-emerald-700 leading-relaxed mt-0.5">
+                Please pay cash at the canteen counter within 30 minutes of ordering to collect your items.
+              </p>
+            </div>
+          </div>
+
+          <!-- Summary -->
+          <div class="card-premium p-4 space-y-2.5">
+            <div class="flex justify-between text-xs text-text-secondary">
+              <span>Item Subtotal</span>
+              <span id="cart-subtotal">₹0.00</span>
+            </div>
+            <div class="flex justify-between text-xs text-text-secondary">
+              <span>Canteen Convenience Fee</span>
+              <span class="text-primary-dark font-medium">FREE</span>
+            </div>
+            <div class="border-t border-slate-100 pt-2.5 flex justify-between text-sm font-bold text-text-primary">
+              <span>Grand Total</span>
+              <span id="cart-total-amount">₹0.00</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Checkout bottom trigger -->
+        <div class="p-6 bg-white border-t border-slate-100 flex-shrink-0">
+          <button id="place-order-btn" class="w-full btn-primary" onclick="handleCheckoutClick()">
+            <i data-lucide="lock" class="w-5 h-5"></i> Proceed to Pay Online
+          </button>
+        </div>
+      </div>
+
+      <!-- VIEW B: ORDER HISTORY -->
+      <div id="cart-history-view" class="flex-1 overflow-y-auto p-6 space-y-4 hidden">
+        <!-- History elements loaded dynamically -->
+      </div>
+
+    </div><!-- /.cart-screen -->
+
+
+    <!-- ==================== SCREEN 5: ORDER CONFIRMATION & QR TOKEN ==================== -->
+    <div id="qr-screen" class="screen flex flex-col h-full hidden">
+      <!-- Top header spacing -->
+      <div class="px-6 pt-6 pb-2 text-center flex-shrink-0">
+        <div class="success-checkmark mb-3">
+          <i data-lucide="check-circle" class="w-8 h-8 text-primary-dark"></i>
+        </div>
+        <h2 id="confirm-screen-title" class="text-lg font-bold font-poppins text-text-primary">Order Placed
+          Successfully!</h2>
+        <p id="confirm-screen-subtitle" class="text-[11px] text-text-secondary">Ready for pickup at the canteen counter
+        </p>
+      </div>
+
+      <!-- Scrollable details container -->
+      <div class="flex-1 overflow-y-auto px-6 py-2 space-y-4">
+        <!-- Guest Mode Screenshot Warning Alert (shown for guest orders) -->
+        <div id="confirm-guest-warning"
+          class="hidden p-4 bg-amber-500/10 border-2 border-amber-500/50 rounded-2xl flex items-start gap-3 shadow-md">
+          <div
+            class="w-8 h-8 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-700 flex-shrink-0 mt-0.5">
+            <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-600"></i>
+          </div>
+          <div class="space-y-1">
+            <h4 class="text-xs font-black text-amber-900 tracking-wide uppercase">⚠️ Important Notice: Guest Mode</h4>
+            <p class="text-xs text-amber-800 leading-relaxed font-semibold">
+              You are ordering in <span class="underline">Guest Mode</span>. Order history will <strong>NOT</strong> be
+              saved. Please take a screenshot of this token now to show at the counter!
+            </p>
+          </div>
+        </div>
+
+        <!-- Expiry Alert Banner (shown if order expires) -->
+        <div id="confirm-expiry-alert"
+          class="hidden p-4 bg-red-50 border border-red-200 rounded-2xl flex items-center gap-3">
+          <i data-lucide="alert-octagon" class="w-6 h-6 text-red-600 flex-shrink-0"></i>
+          <div>
+            <h4 class="text-xs font-bold text-red-800">Order Expired</h4>
+            <p class="text-[11px] text-red-600 mt-0.5 leading-tight">30-minute cash payment window passed. This token is
+              void and inventory has been restored.</p>
+          </div>
+        </div>
+
+        <!-- Live Cash Countdown Bar (shown for unpaid cash orders) -->
+        <div id="confirm-cash-timer-bar"
+          class="hidden p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between">
+          <span class="text-[11px] font-bold text-amber-800 flex items-center gap-1.5">
+            <i data-lucide="clock" class="w-4 h-4 text-amber-600"></i> Cash Payment Window:
+          </span>
+          <span id="confirm-cash-countdown"
+            class="text-xs font-black text-amber-900 bg-amber-200/70 px-2.5 py-0.5 rounded-lg tracking-wider font-mono">
+            30:00
+          </span>
+        </div>
+
+        <!-- Card Details & Token -->
+        <div class="card-premium p-5 space-y-4">
+          <!-- Order Header status info -->
+          <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div>
+              <p class="text-[9px] text-text-secondary uppercase tracking-wider">Status</p>
+              <span id="confirm-status-badge"
+                class="inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200 mt-1">
+                ⏳ Pending Pickup
+              </span>
+            </div>
+            <div class="text-right">
+              <p class="text-[9px] text-text-secondary uppercase tracking-wider">Payment</p>
+              <span id="confirm-payment-badge"
+                class="inline-flex items-center gap-1 bg-green-50 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded border border-green-200 mt-1">
+                PAID
+              </span>
+            </div>
+          </div>
+
+          <!-- Prominent Token Box -->
+          <div class="text-center bg-slate-50 rounded-2xl p-4 border border-slate-100">
+            <p class="text-xs text-text-secondary">Your Order Token</p>
+            <p id="confirm-token-number" class="text-3xl font-black font-poppins tracking-wider text-primary-dark mt-1">
+              #TK-000</p>
+          </div>
+
+          <!-- QR Code Canvas/Image Container -->
+          <div class="flex flex-col items-center justify-center py-2">
+            <div class="p-3 bg-white border border-slate-200 rounded-2xl shadow-subtle">
+              <div id="qrcode-container" class="w-[220px] h-[220px] flex items-center justify-center"></div>
+            </div>
+            <p id="confirm-qr-caption" class="text-[10px] text-text-secondary mt-3 font-semibold">Verification QR
+              Signature Verified</p>
+          </div>
+
+          <!-- Guest Mode Quick Action: Download / Print Token -->
+          <div id="confirm-guest-actions" class="hidden">
+            <button type="button" onclick="downloadOrPrintToken()"
+              class="w-full py-3 px-4 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black rounded-xl text-xs flex items-center justify-center gap-2 shadow-md transition-all active:scale-98">
+              <i data-lucide="camera" class="w-4 h-4"></i> 📸 Download / Print Token (Screenshot)
+            </button>
+          </div>
+
+          <!-- Order Summary details -->
+          <div id="confirm-order-summary" class="bg-slate-50 border border-slate-100 rounded-xl p-3.5 space-y-2">
+            <h4 class="text-xs font-bold text-text-primary">Order Items Summary</h4>
+            <div id="confirm-order-items" class="text-xs text-text-secondary space-y-1">
+              <!-- Dynamically populated items -->
+            </div>
+          </div>
+
+          <!-- Instructional Footer -->
+          <p class="text-xs text-center text-text-secondary leading-relaxed px-2">
+            Show this QR code at the canteen counter for scanning and receiving your order.
+          </p>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="p-6 bg-white border-t border-slate-100 flex-shrink-0">
+        <button class="w-full btn-primary" onclick="resetAndGoHome();">
+          <i data-lucide="utensils" class="w-5 h-5"></i> Back to Menu
+        </button>
+      </div>
+    </div>
+
+
+    <!-- ==================== SCREEN: PROFILE VIEW ==================== -->
+    <div id="profile-screen" class="screen flex flex-col h-full hidden">
+      <!-- Header -->
+      <div class="px-6 pt-6 pb-4 bg-white flex items-center gap-4 border-b border-slate-100 flex-shrink-0">
+        <button
+          class="btn-back bg-slate-100 hover:bg-slate-200 text-text-primary px-3 py-1.5 rounded-lg text-xs font-bold transition-all"
+          onclick="showScreen('home-screen')">&larr; Back</button>
+        <h2 class="font-bold text-base font-poppins text-text-primary">Profile Details</h2>
+      </div>
+
+      <!-- Content -->
+      <div class="flex-1 overflow-y-auto p-6 space-y-6">
+        <!-- Interactive Avatar Area -->
+        <div class="flex flex-col items-center space-y-3">
+          <div class="relative">
+            <div id="profile-avatar-container"
+              class="w-24 h-24 rounded-full bg-primary/10 border-4 border-white shadow-premium flex items-center justify-center font-bold text-3xl text-primary-dark overflow-hidden cursor-pointer"
+              onclick="document.getElementById('profile-upload').click()">
+              U
+            </div>
+            <button onclick="document.getElementById('profile-upload').click()"
+              class="absolute bottom-0 right-0 bg-primary hover:bg-primary-dark text-white p-2 rounded-full shadow-subtle cursor-pointer active:scale-95 transition-transform">
+              <i data-lucide="camera" class="w-4 h-4"></i>
+            </button>
+            <input type="file" id="profile-upload" accept="image/*" class="hidden" onchange="handleAvatarUpload(event)">
+          </div>
+          <p class="text-xs text-text-secondary">Tap the camera icon to upload profile photo</p>
+        </div>
+
+        <!-- Info details cards -->
+        <div class="space-y-4">
+          <div class="card-premium p-4 space-y-3">
+            <div class="border-b border-slate-50 pb-2 flex justify-between items-center">
+              <span class="text-xs font-semibold text-text-secondary uppercase">Full Name</span>
+              <span class="text-sm font-bold text-text-primary" id="profile-name">-</span>
+            </div>
+            <div class="border-b border-slate-50 pb-2 flex justify-between items-center">
+              <span class="text-xs font-semibold text-text-secondary uppercase">Register Number</span>
+              <span class="text-sm font-bold text-text-primary" id="profile-reg">-</span>
+            </div>
+            <div class="border-b border-slate-50 pb-2 flex justify-between items-center">
+              <span class="text-xs font-semibold text-text-secondary uppercase">Mobile Number</span>
+              <span class="text-sm font-bold text-emerald-600 flex items-center gap-1.5" id="profile-phone">
+                <i data-lucide="phone" class="w-3.5 h-3.5"></i> <span>-</span>
+              </span>
+            </div>
+            <div class="border-b border-slate-50 pb-2 flex justify-between items-center">
+              <span class="text-xs font-semibold text-text-secondary uppercase">Email Address</span>
+              <span class="text-sm font-bold text-text-primary" id="profile-email">Not provided</span>
+            </div>
+            <div class="border-b border-slate-50 pb-2 flex justify-between items-center">
+              <span class="text-xs font-semibold text-text-secondary uppercase">Department</span>
+              <span class="text-sm font-bold text-text-primary" id="profile-dept">-</span>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-xs font-semibold text-text-secondary uppercase">Date of Birth</span>
+              <span class="text-sm font-bold text-text-primary" id="profile-dob">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== SCREEN: NOTICES HISTORY ==================== -->
+    <div id="notices-screen" class="screen flex flex-col h-full hidden">
+      <!-- Header -->
+      <div class="px-6 pt-6 pb-4 bg-white flex items-center justify-between border-b border-slate-100 flex-shrink-0">
+        <button
+          class="flex items-center gap-1 text-xs font-bold text-text-secondary hover:text-text-primary transition-colors py-1.5 px-3 bg-slate-50 rounded-xl border border-slate-100"
+          onclick="showScreen('home-screen')">
+          <i data-lucide="chevron-left" class="w-4 h-4"></i> Back to Home
+        </button>
+        <h2 class="font-bold text-base font-poppins text-text-primary">Announcements</h2>
+      </div>
+
+      <!-- Content -->
+      <div class="flex-1 overflow-y-auto p-6 space-y-4 font-poppins" id="notices-history-list">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+
+
+  </div>
+
+  <!-- ==================== SCREEN: NOTICES MODAL ==================== -->
+  <div id="notices-modal" class="fixed inset-0 z-[1500] flex items-center justify-center modal-overlay hidden">
+    <div
+      class="bg-white border border-slate-200 w-full max-w-md p-6 rounded-2xl shadow-premium relative space-y-4 mx-4">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+        <h3 class="font-bold text-sm text-text-primary flex items-center gap-1.5">
+          <i data-lucide="megaphone" class="w-4 h-4 text-primary-dark"></i> Campus Announcements
+        </h3>
+        <button onclick="closeNoticesModal()" class="text-text-secondary hover:text-text-primary">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div id="notices-modal-list" class="max-h-[300px] overflow-y-auto space-y-3 pr-1">
+        <!-- Loaded dynamically -->
+        <p class="text-center py-6 text-xs text-text-secondary">No recent notices.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ONLINE PAYMENT GATEWAY MODAL (SWIGGY/FLIPKART STYLE) ==================== -->
+  <div id="payment-gateway-modal"
+    class="fixed inset-0 z-[1600] flex items-center justify-center modal-overlay hidden px-4">
+    <div
+      class="bg-white border border-slate-200 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden relative flex flex-col max-h-[92vh]">
+
+      <!-- Modal Header -->
+      <div
+        class="px-5 py-4 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white flex items-center justify-between shadow-sm flex-shrink-0">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-full bg-white/15 flex items-center justify-center backdrop-blur-sm">
+            <i data-lucide="shield-check" class="w-5 h-5 text-white"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-sm leading-tight flex items-center gap-1.5 font-poppins">
+              Hostel Canteen Pay
+              <span class="text-[9px] bg-white/20 text-white px-2 py-0.5 rounded-full font-semibold">256-Bit SSL</span>
+            </h3>
+            <p class="text-[10px] text-emerald-100 font-medium">Secured Payment Gateway</p>
+          </div>
+        </div>
+        <div class="text-right flex items-center gap-3">
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-emerald-200 font-bold">Total Amount</p>
+            <p id="pg-modal-amount" class="text-base font-black font-poppins text-white">₹0.00</p>
+          </div>
+          <button onclick="closePaymentGatewayModal()"
+            class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors text-white">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Dual Option Tabs Switcher -->
+      <div class="p-3 bg-slate-50 border-b border-slate-100 flex-shrink-0">
+        <div class="grid grid-cols-2 gap-1.5 p-1 bg-slate-200/80 rounded-2xl">
+          <button id="tab-btn-upi-app" onclick="switchPaymentGatewayTab('upi_app')"
+            class="payment-tab-btn active py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all">
+            <i data-lucide="smartphone" class="w-4 h-4"></i>
+            <span>UPI Apps</span>
+          </button>
+          <button id="tab-btn-dynamic-qr" onclick="switchPaymentGatewayTab('dynamic_qr')"
+            class="payment-tab-btn py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all">
+            <i data-lucide="qr-code" class="w-4 h-4"></i>
+            <span>Scan Dynamic QR</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab Content Area (Scrollable) -->
+      <div class="p-5 overflow-y-auto space-y-4 flex-1">
+
+        <!-- OPTION A: UPI APPS INTENT -->
+        <div id="tab-content-upi-app" class="space-y-4">
+          <div class="bg-emerald-50/70 border border-emerald-200/80 p-3.5 rounded-2xl flex items-center gap-3">
+            <div
+              class="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-600 flex-shrink-0">
+              <i data-lucide="zap" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <h4 class="text-xs font-bold text-emerald-900">Direct UPI App Payment</h4>
+              <p class="text-[10px] text-emerald-700 leading-tight mt-0.5">Pay seamlessly with any UPI application
+                installed on your device.</p>
+            </div>
+          </div>
+
+          <!-- Direct Intent Trigger Button -->
+          <a id="pg-upi-intent-link" href="#"
+            class="w-full btn-primary py-3.5 shadow-lg flex items-center justify-center gap-2 rounded-2xl font-bold text-sm tracking-wide active:scale-98 transition-all"
+            onclick="handleUpiIntentTrigger()">
+            <i data-lucide="external-link" class="w-4 h-4"></i> Pay via UPI App (₹<span
+              id="pg-intent-btn-amount">0.00</span>)
+          </a>
+
+          <!-- Supported UPI Apps Badges -->
+          <div class="space-y-1.5">
+            <p class="text-[10px] font-bold text-text-secondary uppercase tracking-wider text-center">Supported Apps</p>
+            <div class="grid grid-cols-4 gap-2 text-center">
+              <div class="p-2.5 bg-slate-50 border border-slate-100 rounded-xl upi-app-badge">
+                <span class="text-base block">🟢</span>
+                <span class="text-[10px] font-bold text-text-primary block mt-0.5">GPay</span>
+              </div>
+              <div class="p-2.5 bg-slate-50 border border-slate-100 rounded-xl upi-app-badge">
+                <span class="text-base block">🟣</span>
+                <span class="text-[10px] font-bold text-text-primary block mt-0.5">PhonePe</span>
+              </div>
+              <div class="p-2.5 bg-slate-50 border border-slate-100 rounded-xl upi-app-badge">
+                <span class="text-base block">🔵</span>
+                <span class="text-[10px] font-bold text-text-primary block mt-0.5">Paytm</span>
+              </div>
+              <div class="p-2.5 bg-slate-50 border border-slate-100 rounded-xl upi-app-badge">
+                <span class="text-base block">🟠</span>
+                <span class="text-[10px] font-bold text-text-primary block mt-0.5">BHIM / Any</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Verification Trigger / Simulator Card -->
+          <div class="bg-slate-50 border border-slate-200/80 p-3.5 rounded-2xl space-y-2.5">
+            <div class="flex items-center justify-between text-xs font-semibold text-text-secondary">
+              <span>Transaction Ref</span>
+              <span id="pg-upi-txn-ref" class="font-mono font-bold text-text-primary text-[11px]">-</span>
+            </div>
+            <p class="text-[10px] text-text-secondary leading-relaxed">
+              Once you complete the transfer in your UPI application, click below to verify authorization and receive
+              your digital pickup token.
+            </p>
+            <button id="pg-verify-upi-btn" onclick="verifyUpiAppPayment()"
+              class="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow transition-all">
+              <i data-lucide="check-circle" class="w-4 h-4 text-emerald-400"></i> I Have Paid in UPI App (Verify)
+            </button>
+          </div>
+        </div>
+
+        <!-- OPTION B: DYNAMIC QR CODE WITH 3-MINUTE COUNTDOWN & AUTO-EXPIRY -->
+        <div id="tab-content-dynamic-qr" class="space-y-4 hidden">
+
+          <!-- 3-Minute Expiry Countdown Bar -->
+          <div class="p-3 bg-amber-50 border border-amber-200 rounded-2xl space-y-1.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-bold text-amber-900 flex items-center gap-1.5">
+                <i data-lucide="timer" class="w-4 h-4 text-amber-600 animate-pulse"></i>
+                Session Validity:
+              </span>
+              <span id="pg-qr-countdown-text"
+                class="font-mono font-black text-xs text-amber-900 bg-amber-200/80 px-2.5 py-0.5 rounded-lg tracking-wider">
+                03:00
+              </span>
+            </div>
+            <!-- Progress Bar -->
+            <div class="w-full bg-amber-200/60 rounded-full h-1.5 overflow-hidden">
+              <div id="pg-qr-progress-bar" class="bg-amber-600 h-1.5 rounded-full countdown-progress-bar"
+                style="width: 100%;"></div>
+            </div>
+          </div>
+
+          <!-- Dynamic QR Canvas & Fallback Box -->
+          <div
+            class="relative flex flex-col items-center justify-center p-5 bg-slate-50 border border-slate-200 rounded-3xl">
+            <div class="p-3 bg-white border border-slate-200 rounded-2xl shadow-subtle relative">
+              <canvas id="pg-dynamic-qr-canvas" class="w-40 h-40"></canvas>
+              <img id="pg-dynamic-qr-image" src="" alt="Scan QR to Pay" class="w-40 h-40 object-contain hidden">
+
+              <!-- EXPIRED Overlay (shown if 3-minute timer elapses) -->
+              <div id="pg-qr-expired-overlay"
+                class="absolute inset-0 bg-slate-900/85 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center p-3 text-center hidden">
+                <i data-lucide="alert-circle" class="w-8 h-8 text-rose-400 mb-1"></i>
+                <p class="text-xs font-bold text-white leading-tight">QR Session Expired</p>
+                <p class="text-[10px] text-slate-300 mt-0.5 mb-2">3-minute validity elapsed</p>
+                <button onclick="refreshDynamicQrSession()"
+                  class="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-[10px] font-bold shadow flex items-center gap-1">
+                  <i data-lucide="refresh-cw" class="w-3 h-3"></i> Refresh QR
+                </button>
+              </div>
+            </div>
+
+            <p class="text-xs font-bold text-text-primary mt-3 flex items-center gap-1.5">
+              <span>Amount: ₹<span id="pg-qr-amount-display">0.00</span></span>
+            </p>
+            <p class="text-[10px] text-text-secondary mt-0.5">Scan using GPay, PhonePe, Paytm, or any BHIM UPI</p>
+
+            <!-- Real-time Polling Status Indicator -->
+            <div
+              class="mt-3 flex items-center gap-1.5 text-[10px] font-medium text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+              <span>Listening for payment confirmation...</span>
+            </div>
+          </div>
+
+          <!-- Quick Actions for Dynamic QR -->
+          <div class="flex gap-2">
+            <button onclick="refreshDynamicQrSession()"
+              class="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-text-primary rounded-xl text-xs font-bold flex items-center justify-center gap-1 transition-all">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh QR
+            </button>
+            <button onclick="verifyDynamicQrPayment()"
+              class="flex-1 py-2.5 bg-primary text-white hover:bg-primary-dark rounded-xl text-xs font-bold flex items-center justify-center gap-1 shadow transition-all">
+              <i data-lucide="check" class="w-3.5 h-3.5"></i> Paid? Check Status
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between flex-shrink-0">
+        <p class="text-[10px] text-text-secondary flex items-center gap-1">
+          <i data-lucide="lock" class="w-3 h-3 text-slate-400"></i> 100% Secure Checkout
+        </p>
+        <button onclick="closePaymentGatewayModal()"
+          class="text-xs font-bold text-rose-600 hover:text-rose-700 px-3 py-1.5 rounded-lg hover:bg-rose-50 transition-colors">
+          Cancel Payment
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ==================== FORGOT PASSWORD (MOBILE OTP) MODAL ==================== -->
+  <div id="forgot-password-modal"
+    class="fixed inset-0 z-[1700] flex items-center justify-center modal-overlay hidden px-4">
+    <div
+      class="bg-white border border-slate-200 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden relative flex flex-col">
+
+      <!-- Modal Header -->
+      <div
+        class="px-6 py-4 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white flex items-center justify-between shadow-sm">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary">
+            <i data-lucide="key-round" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-sm leading-tight font-poppins">Reset Password</h3>
+            <p class="text-[10px] text-slate-400 font-medium">Mobile OTP Verification</p>
+          </div>
+        </div>
+        <button onclick="closeForgotPasswordModal()"
+          class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors text-slate-300 hover:text-white">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Steps Container -->
+      <div class="p-6 space-y-4">
+
+        <!-- STEP 1: MOBILE NUMBER INPUT -->
+        <div id="fp-step-1" class="space-y-4">
+          <div class="text-center space-y-1">
+            <div
+              class="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto text-primary-dark mb-2 border border-primary/20">
+              <i data-lucide="smartphone" class="w-6 h-6"></i>
+            </div>
+            <h4 class="text-base font-bold font-poppins text-text-primary">Find Your Account</h4>
+            <p class="text-xs text-text-secondary">Enter your registered 10-digit mobile number to receive an
+              authentication OTP code.</p>
+          </div>
+
+          <form onsubmit="handleSendOtpSubmit(event)" class="space-y-4 pt-2">
+            <div>
+              <label class="block text-xs font-semibold text-text-secondary mb-1.5 uppercase">Registered Mobile
+                Number</label>
+              <div class="relative">
+                <span class="absolute left-3.5 top-3.5 text-xs font-bold text-slate-500">+91</span>
+                <input type="tel" id="fp-phone-input" required maxlength="10" placeholder="10-digit mobile number"
+                  oninput="this.value = this.value.replace(/\D/g, '')"
+                  class="w-full pl-12 pr-4 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white font-medium">
+              </div>
+            </div>
+
+            <button type="submit" id="fp-send-otp-btn" class="w-full btn-primary py-3">
+              <i data-lucide="send" class="w-4 h-4"></i> Send 6-Digit OTP
+            </button>
+          </form>
+        </div>
+
+        <!-- STEP 2: OTP VERIFICATION -->
+        <div id="fp-step-2" class="space-y-4 hidden">
+          <div class="text-center space-y-1">
+            <div
+              class="w-12 h-12 bg-emerald-500/10 rounded-2xl flex items-center justify-center mx-auto text-emerald-600 mb-2 border border-emerald-500/20">
+              <i data-lucide="shield-check" class="w-6 h-6"></i>
+            </div>
+            <h4 class="text-base font-bold font-poppins text-text-primary">Enter Verification Code</h4>
+            <p class="text-xs text-text-secondary">We sent a 6-digit OTP code to <strong id="fp-display-phone"
+                class="text-text-primary">+91 ----------</strong></p>
+          </div>
+
+          <!-- Sandbox Test Banner -->
+          <div id="fp-sandbox-otp-banner"
+            class="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-0.5 hidden">
+            <span class="text-[10px] uppercase font-bold text-emerald-800 tracking-wider">SMS OTP Code</span>
+            <p class="text-xs font-black font-mono text-emerald-900 tracking-widest" id="fp-sandbox-otp-code">------</p>
+          </div>
+
+          <form onsubmit="handleVerifyOtpSubmit(event)" class="space-y-4">
+            <div>
+              <label class="block text-xs font-semibold text-text-secondary mb-1.5 uppercase text-center">6-Digit
+                OTP</label>
+              <input type="text" id="fp-otp-input" required maxlength="6" placeholder="000000"
+                oninput="this.value = this.value.replace(/\D/g, '')"
+                class="w-full py-3 text-center text-xl font-bold tracking-widest font-mono rounded-xl border border-slate-200 focus:outline-none focus:border-primary transition-colors bg-white">
+            </div>
+
+            <!-- Resend Timer -->
+            <div class="flex items-center justify-between text-xs px-1">
+              <span id="fp-timer-text" class="text-slate-500 font-medium flex items-center gap-1">
+                <i data-lucide="clock" class="w-3.5 h-3.5"></i> Resend OTP in <span id="fp-countdown"
+                  class="font-bold">59s</span>
+              </span>
+              <button type="button" id="fp-resend-btn" onclick="handleResendOtp()"
+                class="font-bold text-primary hover:text-primary-dark disabled:text-slate-300 disabled:cursor-not-allowed"
+                disabled>
+                Resend OTP
+              </button>
+            </div>
+
+            <div class="flex gap-2.5 pt-2">
+              <button type="button" onclick="goToFpStep(1)"
+                class="w-1/3 py-3 border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold rounded-xl text-xs transition-colors">
+                Back
+              </button>
+              <button type="submit" id="fp-verify-btn" class="flex-1 btn-primary py-3">
+                <i data-lucide="check" class="w-4 h-4"></i> Verify OTP
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- STEP 3: RESET PASSWORD -->
+        <div id="fp-step-3" class="space-y-4 hidden">
+          <div class="text-center space-y-1">
+            <div
+              class="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto text-primary-dark mb-2 border border-primary/20">
+              <i data-lucide="lock" class="w-6 h-6"></i>
+            </div>
+            <h4 class="text-base font-bold font-poppins text-text-primary">Create New Password</h4>
+            <p class="text-xs text-text-secondary">Please enter and confirm your new secure password.</p>
+          </div>
+
+          <form onsubmit="handleResetPasswordSubmit(event)" class="space-y-3.5">
+            <div>
+              <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">New Password</label>
+              <div class="relative">
+                <i data-lucide="lock" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+                <input type="password" id="fp-new-pwd" required placeholder="Minimum 6 characters"
+                  class="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+                <span class="pwd-toggle" onclick="togglePasswordVisibility('fp-new-pwd', this)">
+                  <i data-lucide="eye" class="w-4 h-4"></i>
+                </span>
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Confirm New Password</label>
+              <div class="relative">
+                <i data-lucide="check-circle" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+                <input type="password" id="fp-confirm-pwd" required placeholder="Re-enter new password"
+                  class="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+                <span class="pwd-toggle" onclick="togglePasswordVisibility('fp-confirm-pwd', this)">
+                  <i data-lucide="eye" class="w-4 h-4"></i>
+                </span>
+              </div>
+            </div>
+
+            <button type="submit" id="fp-submit-pwd-btn" class="w-full btn-primary py-3 mt-4">
+              <i data-lucide="shield-check" class="w-4 h-4"></i> Change Password
+            </button>
+          </form>
+        </div>
+
+        <!-- STEP 4: SUCCESS CONFIRMATION -->
+        <div id="fp-step-4" class="text-center py-6 space-y-3 hidden">
+          <div
+            class="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto shadow-sm">
+            <i data-lucide="check-circle-2" class="w-10 h-10"></i>
+          </div>
+          <h4 class="text-lg font-bold font-poppins text-text-primary">Password Reset Successful!</h4>
+          <p class="text-xs text-text-secondary max-w-xs mx-auto">Your account password has been updated. You can now
+            log in with your new credentials.</p>
+          <button onclick="closeForgotPasswordModal(); switchAuthTab('login');"
+            class="btn-primary py-2.5 px-6 mx-auto mt-2">
+            Go to Login
+          </button>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+
+  <!-- App logic js file -->
+  <script src="app.js"></script>
+</body>
+
+</html>

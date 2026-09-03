@@ -1,0 +1,1177 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CMSCE Canteen Manager Admin Portal</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#10B981',
+            'primary-dark': '#059669',
+            darkbg: '#070D0B',
+            darksurface: '#111E19',
+            'darkcard-hover': '#162721',
+            'border-subtle': '#1E3A30',
+          }
+        }
+      }
+    }
+  </script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" href="manager.css">
+  <!-- Supabase JS Client SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- QRCode Canvas rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+  <!-- html5-qrcode video scanner CDN library -->
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+</head>
+
+<body class="min-h-screen text-slate-100 flex flex-col">
+
+  <!-- Full-screen loader -->
+  <div id="loading-overlay" class="fixed inset-0 z-[2000] flex flex-col items-center justify-center hidden">
+    <div class="bg-darksurface border border-slate-700 p-6 rounded-2xl shadow-xl flex flex-col items-center gap-3">
+      <div class="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+      <p class="text-xs font-bold text-slate-100">Synchronizing database...</p>
+    </div>
+  </div>
+
+  <!-- Toast notifications -->
+  <div id="toast-container"></div>
+
+  <!-- ==================== SCREEN ①: MANAGER LOGIN ==================== -->
+  <div id="login-screen" class="flex-1 flex flex-col items-center justify-center p-6">
+    <div class="w-full max-w-sm bg-darksurface border border-slate-700 p-8 rounded-2xl shadow-2xl space-y-6">
+      <div class="text-center">
+        <h2 class="text-xl font-bold font-poppins text-slate-200">Canteen Manager Login</h2>
+        <p class="text-xs text-slate-400 mt-1">Authorized logins only</p>
+      </div>
+
+      <form id="manager-login-form" class="space-y-4" onsubmit="handleManagerLogin(event)">
+        <div class="space-y-1">
+          <label class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Mobile Number</label>
+          <input type="tel" id="login-phone" placeholder="e.g. 9025114185"
+            class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+            required>
+        </div>
+
+        <div class="space-y-1">
+          <label class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">OTP PIN</label>
+          <input type="password" id="login-otp" placeholder="e.g. 1234" maxlength="4"
+            class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs tracking-[0.5em] text-center focus:outline-none focus:border-primary text-white"
+            required>
+        </div>
+
+        <button type="submit"
+          class="w-full bg-primary hover:bg-primary-dark text-slate-900 font-bold py-2.5 rounded-xl transition-all text-xs">
+          Login
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== SCREEN ②: MAIN DASHBOARD ==================== -->
+  <div id="dashboard-screen" class="flex-1 flex flex-col hidden min-h-screen">
+
+    <!-- TOP HEADER BAR -->
+    <header
+      class="bg-darksurface border-b border-slate-800 px-6 py-3.5 flex items-center justify-between gap-4 shadow-md relative z-30">
+      <!-- Left Section: Hamburger Menu Button + CMSCE Canteen Brand Logo -->
+      <div class="flex items-center gap-3.5">
+        <button id="sidebar-toggle-btn" onclick="toggleSidebarDrawer()"
+          class="p-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-primary/50 text-slate-300 hover:text-white transition-all flex items-center justify-center focus:outline-none shadow"
+          title="Open Navigation Menu">
+          <i data-lucide="menu" class="w-5 h-5"></i>
+        </button>
+        <div class="flex items-center gap-3">
+          <img src="logo.png" alt="Campus Logo" class="header-canteen-logo" />
+          <div>
+            <span class="font-extrabold text-sm text-primary tracking-wide">CMSCE Canteen</span>
+            <h1 class="text-[11px] font-bold text-slate-400">Canteen Manager Dashboard</h1>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center Section: Wedge Ready & Canteen Status Toggle -->
+      <div class="hidden sm:flex items-center gap-3">
+        <!-- Hardware Wedge Scanner Indicator -->
+        <div id="wedge-indicator"
+          class="flex items-center gap-2 bg-primary/10 text-primary border border-primary/20 px-3 py-1.5 rounded-xl transition-all duration-200"
+          title="USB/Hardware scanner status">
+          <i data-lucide="scan" class="w-3.5 h-3.5"></i>
+          <span class="text-[10px] font-bold tracking-wide">🔌 Wedge Ready</span>
+        </div>
+
+        <!-- Canteen Status Toggle -->
+        <div class="flex items-center gap-2.5 bg-slate-900 border border-slate-800 px-3.5 py-1.5 rounded-xl">
+          <span class="text-xs font-bold text-slate-400">Status:</span>
+          <button id="canteen-status-toggle-btn" onclick="toggleCanteenStatus()"
+            class="px-2.5 py-0.5 rounded-lg text-xs font-bold transition-all bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            🟢 OPEN
+          </button>
+        </div>
+      </div>
+
+      <!-- Right Corner Section: Live Clock -->
+      <div class="flex items-center gap-2 bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl">
+        <i data-lucide="clock" class="w-4 h-4 text-primary animate-pulse"></i>
+        <span id="live-clock" class="text-xs font-mono font-bold text-slate-300">12:00:00 AM</span>
+      </div>
+    </header>
+
+    <!-- SIDEBAR DRAWER OVERLAY BACKDROP -->
+    <div id="sidebar-backdrop" onclick="closeSidebarDrawer()"
+      class="fixed inset-0 z-[1000] bg-black/60 backdrop-blur-sm transition-opacity opacity-0 pointer-events-none duration-300">
+    </div>
+
+    <!-- SLIDE-OUT SIDEBAR NAVIGATION DRAWER -->
+    <aside id="sidebar-drawer"
+      class="fixed top-0 left-0 bottom-0 z-[1010] w-72 bg-darksurface border-r border-slate-800 shadow-2xl flex flex-col transition-transform -translate-x-full duration-300 ease-in-out">
+      <!-- Drawer Header -->
+      <div class="p-5 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <img src="logo.png" alt="Campus Logo" class="header-canteen-logo" style="height: 32px;" />
+          <div>
+            <span class="font-extrabold text-sm text-primary tracking-wide">CMSCE Canteen</span>
+            <p class="text-[10px] text-slate-400 font-semibold">Manager Navigation</p>
+          </div>
+        </div>
+        <button onclick="closeSidebarDrawer()"
+          class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Drawer Navigation Menu Links -->
+      <nav class="flex-1 p-4 space-y-1.5 overflow-y-auto">
+        <button id="nav-btn-dashboard" onclick="navigateToView('dashboard')"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold bg-primary text-slate-900 transition-all flex items-center gap-3 shadow-lg text-left">
+          <i data-lucide="layout-dashboard" class="w-4 h-4"></i> Dashboard / Counter
+        </button>
+        <button id="nav-btn-pos" onclick="navigateToView('pos')"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-800 transition-all flex items-center gap-3 text-left">
+          <i data-lucide="zap" class="w-4 h-4 text-amber-400"></i> ⚡ Quick Sale (Spot POS)
+        </button>
+        <button id="nav-btn-sales" onclick="navigateToView('sales')"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-800 transition-all flex items-center gap-3 text-left">
+          <i data-lucide="trending-up" class="w-4 h-4"></i> Sales Analytics
+        </button>
+        <button id="nav-btn-inventory" onclick="navigateToView('inventory')"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-800 transition-all flex items-center gap-3 text-left">
+          <i data-lucide="box" class="w-4 h-4"></i> Inventory
+        </button>
+        <button id="nav-btn-categories" onclick="navigateToView('categories')"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-800 transition-all flex items-center gap-3 text-left">
+          <i data-lucide="tags" class="w-4 h-4"></i> Categories
+        </button>
+        <button id="nav-btn-history" onclick="navigateToView('history')"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-800 transition-all flex items-center gap-3 text-left">
+          <i data-lucide="history" class="w-4 h-4"></i> Order History
+        </button>
+        <button id="nav-btn-settings" onclick="navigateToView('settings')"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-800 transition-all flex items-center gap-3 text-left">
+          <i data-lucide="settings" class="w-4 h-4"></i> Settings
+        </button>
+        <button id="nav-btn-notice" onclick="navigateToView('notice')"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-800 transition-all flex items-center gap-3 text-left">
+          <i data-lucide="megaphone" class="w-4 h-4"></i> Post Notice
+        </button>
+      </nav>
+
+      <!-- Drawer Footer: Logout -->
+      <div class="p-4 border-t border-slate-800">
+        <button onclick="handleLogout()"
+          class="w-full px-4 py-3 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-all flex items-center gap-3 text-left">
+          <i data-lucide="log-out" class="w-4 h-4"></i> Logout
+        </button>
+      </div>
+    </aside>
+
+    <!-- VIEW 1: MAIN COUNTER VIEW (Focused on QR Scan & Active Order Queue) -->
+    <div id="manager-dashboard-view" class="flex-1 p-6 space-y-6 max-w-5xl mx-auto w-full">
+      <!-- 4-Column Responsive Grid: Today's Live Metric Cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <!-- Card 1 (Today's Total Revenue): Large highlighted value with trending icon -->
+        <div
+          class="card-dark p-4 rounded-2xl border border-primary/30 bg-gradient-to-br from-primary/10 via-slate-900/90 to-slate-900 shadow-lg relative overflow-hidden flex flex-col justify-between">
+          <div class="flex items-center justify-between text-slate-400">
+            <span class="text-[11px] uppercase font-bold tracking-wider text-primary">Today's Revenue</span>
+            <div class="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center text-primary">
+              <i data-lucide="trending-up" class="w-4 h-4"></i>
+            </div>
+          </div>
+          <div class="mt-2">
+            <span id="top-metric-total" class="text-2xl lg:text-3xl font-black text-primary tracking-tight">₹0.00</span>
+            <p class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 font-medium">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Live Collection
+            </p>
+          </div>
+        </div>
+
+        <!-- Card 2 (Cash In Hand): Displays total collected via Cash -->
+        <div
+          class="card-dark p-4 rounded-2xl border border-emerald-500/20 bg-slate-900/80 shadow-md flex flex-col justify-between">
+          <div class="flex items-center justify-between text-slate-400">
+            <span class="text-[11px] uppercase font-bold tracking-wider text-emerald-400">Cash In Hand</span>
+            <div class="w-7 h-7 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400">
+              <i data-lucide="banknote" class="w-4 h-4"></i>
+            </div>
+          </div>
+          <div class="mt-2">
+            <span id="top-metric-cash" class="text-xl lg:text-2xl font-black text-slate-100 tracking-tight">₹0.00</span>
+            <p class="text-[10px] text-emerald-400/80 mt-0.5 font-medium">💵 Cash Counter</p>
+          </div>
+        </div>
+
+        <!-- Card 3 (UPI Collection): Displays total collected via UPI -->
+        <div
+          class="card-dark p-4 rounded-2xl border border-blue-500/20 bg-slate-900/80 shadow-md flex flex-col justify-between">
+          <div class="flex items-center justify-between text-slate-400">
+            <span class="text-[11px] uppercase font-bold tracking-wider text-blue-400">UPI Collection</span>
+            <div class="w-7 h-7 rounded-lg bg-blue-500/15 flex items-center justify-center text-blue-400">
+              <i data-lucide="qr-code" class="w-4 h-4"></i>
+            </div>
+          </div>
+          <div class="mt-2">
+            <span id="top-metric-upi" class="text-xl lg:text-2xl font-black text-slate-100 tracking-tight">₹0.00</span>
+            <p class="text-[10px] text-blue-400/80 mt-0.5 font-medium">📱 UPI QR Pay</p>
+          </div>
+        </div>
+
+        <!-- Card 4 (Orders Completed): Count of completed/delivered orders today -->
+        <div
+          class="card-dark p-4 rounded-2xl border border-purple-500/20 bg-slate-900/80 shadow-md flex flex-col justify-between">
+          <div class="flex items-center justify-between text-slate-400">
+            <span class="text-[11px] uppercase font-bold tracking-wider text-purple-400">Orders Completed</span>
+            <div class="w-7 h-7 rounded-lg bg-purple-500/15 flex items-center justify-center text-purple-400">
+              <i data-lucide="package-check" class="w-4 h-4"></i>
+            </div>
+          </div>
+          <div class="mt-2">
+            <span id="top-metric-orders" class="text-xl lg:text-2xl font-black text-slate-100 tracking-tight">0</span>
+            <p class="text-[10px] text-purple-400/80 mt-0.5 font-medium">📦 Orders Delivered</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Tab Switcher: Active Queue vs Quick Sale POS -->
+      <div class="flex items-center gap-2 p-1.5 bg-slate-900 border border-slate-800 rounded-2xl shadow-md">
+        <button onclick="navigateToView('dashboard')"
+          class="flex-1 py-2.5 px-4 rounded-xl text-xs font-bold bg-primary text-slate-900 transition-all flex items-center justify-center gap-2 shadow">
+          <i data-lucide="list-ordered" class="w-4 h-4"></i> Active Order Queue (<span id="tab-queue-count">0</span>)
+        </button>
+        <button onclick="navigateToView('pos')"
+          class="flex-1 py-2.5 px-4 rounded-xl text-xs font-bold text-slate-300 hover:text-white hover:bg-slate-800 transition-all flex items-center justify-center gap-2">
+          <i data-lucide="zap" class="w-4 h-4 text-amber-400"></i> ⚡ Quick Sale (Spot POS)
+        </button>
+      </div>
+
+      <!-- Main Body: Active Order Queue takes full primary view -->
+      <div id="live-order-logs-container" class="card-dark p-6 space-y-4">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div class="flex items-center gap-2">
+            <h3 class="font-bold text-sm uppercase text-slate-300 tracking-wider">Active Order Queue</h3>
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          </div>
+          <span class="text-xs text-slate-400">Live Realtime Updates</span>
+        </div>
+        <div id="live-orders-list" class="space-y-3">
+          <!-- Dynamic Active queue elements -->
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 1B: QUICK SALE (SPOT POS) VIEW -->
+    <div id="pos-view" class="flex-1 hidden p-6 max-w-7xl mx-auto w-full space-y-6">
+      <!-- Top Action Bar -->
+      <div
+        class="card-dark p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-2 border-amber-500/20 shadow-lg">
+        <div class="flex items-center gap-3.5">
+          <div
+            class="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 flex-shrink-0">
+            <i data-lucide="zap" class="w-6 h-6"></i>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h2 class="text-base font-bold text-slate-100 font-poppins">⚡ Quick Sale (Spot POS)</h2>
+              <span
+                class="text-[10px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Walk-in
+                Counter</span>
+            </div>
+            <p class="text-xs text-slate-400 mt-0.5">Instant tap-to-add billing, real-time inventory deduction &
+              automated revenue tracking.</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 w-full sm:w-auto">
+          <button onclick="navigateToView('dashboard')"
+            class="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow">
+            <i data-lucide="list-ordered" class="w-4 h-4 text-primary"></i> Switch to Order Queue
+          </button>
+        </div>
+      </div>
+
+      <!-- 2-Column POS Layout -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <!-- Left Column: Search, Category Filters & Item Catalog (Span 7-8) -->
+        <div class="lg:col-span-7 xl:col-span-8 space-y-4">
+          <!-- Search & Category Filters Card -->
+          <div class="card-dark p-4 space-y-3">
+            <!-- Live Search Bar -->
+            <div class="relative w-full">
+              <span class="absolute inset-y-0 left-0 flex items-center pl-3.5 pointer-events-none text-slate-400">
+                <i data-lucide="search" class="w-4 h-4 text-emerald-400"></i>
+              </span>
+              <input type="text" id="posSearch" oninput="handlePosSearch(this.value)"
+                placeholder="Search item by name..."
+                class="w-full pl-10 pr-10 py-3 rounded-xl bg-slate-900 border border-slate-700 text-sm focus:outline-none focus:border-primary text-white placeholder-slate-500 font-medium"
+                autocomplete="off">
+              <button id="pos-search-clear-btn" type="button" onclick="clearPosSearch()"
+                class="absolute inset-y-0 right-0 flex items-center pr-3.5 text-slate-500 hover:text-white hidden"
+                title="Clear search">
+                <i data-lucide="x" class="w-4 h-4"></i>
+              </button>
+            </div>
+
+            <!-- Category Filter Chips -->
+            <div class="flex items-center gap-2 overflow-x-auto pb-1">
+              <span class="text-[10px] uppercase font-bold text-slate-400 flex-shrink-0">Category:</span>
+              <div id="pos-category-chips" class="flex flex-wrap gap-1.5">
+                <!-- Populated dynamically via renderPosCategories() -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Items Grid Container -->
+          <div class="card-dark p-4 sm:p-5 space-y-3 min-h-[420px]">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+              <div class="flex items-center gap-2">
+                <h3 class="font-bold text-xs uppercase text-slate-300 tracking-wider">Canteen Menu Catalog</h3>
+                <span id="pos-items-count"
+                  class="text-[10px] font-bold text-slate-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-full">0
+                  items</span>
+              </div>
+              <span class="text-[11px] text-slate-400 flex items-center gap-1">
+                <i data-lucide="touch-pad" class="w-3.5 h-3.5 text-primary"></i> Tap card or [+] to add
+              </span>
+            </div>
+
+            <!-- Dynamic Menu Items Grid -->
+            <div id="pos-items-grid" class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
+              <!-- Rendered dynamically -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column: Sticky Mini POS Cart Panel (Span 4-5) -->
+        <div class="lg:col-span-5 xl:col-span-4 sticky top-6 space-y-4">
+          <div id="pos-cart-panel"
+            class="card-dark p-5 flex flex-col justify-between border-2 border-primary/40 shadow-2xl">
+            <!-- Cart Header -->
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div class="flex items-center gap-2.5">
+                <div
+                  class="w-9 h-9 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+                  <i data-lucide="shopping-cart" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h3 class="font-bold text-sm text-slate-100 font-poppins">Mini POS Cart</h3>
+                  <p class="text-[10px] text-slate-400"><span id="pos-cart-items-qty">0</span> items in tray</p>
+                </div>
+              </div>
+              <button type="button" onclick="clearPosCart()" id="pos-cart-clear-btn"
+                class="text-[11px] font-bold text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border border-rose-500/20 px-2.5 py-1 rounded-lg transition-all flex items-center gap-1"
+                title="Clear all cart items">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Clear
+              </button>
+            </div>
+
+            <!-- Cart Items List (Scrollable) -->
+            <div id="pos-cart-items-list" class="divide-y divide-slate-800/60 my-3 max-h-[340px] overflow-y-auto pr-1">
+              <!-- Rendered dynamically -->
+            </div>
+
+            <!-- Bill Calculation Summary & Payment Actions -->
+            <div class="space-y-4 pt-3 border-t border-slate-800">
+              <div class="bg-slate-900/80 border border-slate-800 p-3.5 rounded-xl space-y-2">
+                <div class="flex justify-between text-xs text-slate-400">
+                  <span>Items Subtotal</span>
+                  <span id="pos-cart-subtotal" class="font-semibold text-slate-200">₹0.00</span>
+                </div>
+                <div class="flex justify-between items-baseline border-t border-slate-800/80 pt-2">
+                  <span class="text-xs uppercase font-bold text-slate-300 tracking-wider">Grand Total:</span>
+                  <span id="pos-cart-grand-total" class="text-2xl font-black text-primary font-poppins">₹0.00</span>
+                </div>
+              </div>
+
+              <!-- Quick Payment Action Buttons -->
+              <div class="space-y-2.5">
+                <button id="pos-btn-cash" type="button" onclick="handlePosCheckout('CASH')" disabled
+                  class="w-full py-3.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition-all flex items-center justify-center gap-2 shadow-lg disabled:opacity-30 disabled:cursor-not-allowed active:scale-[0.98]">
+                  <i data-lucide="banknote" class="w-4 h-4"></i> 💵 Cash Collected
+                </button>
+                <button id="pos-btn-upi" type="button" onclick="handlePosCheckout('UPI')" disabled
+                  class="w-full py-3.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition-all flex items-center justify-center gap-2 shadow-lg disabled:opacity-30 disabled:cursor-not-allowed active:scale-[0.98]">
+                  <i data-lucide="smartphone" class="w-4 h-4"></i> 📱 UPI Paid
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 2: SALES ANALYTICS VIEW -->
+    <div id="sales-view" class="flex-1 hidden p-6 max-w-4xl mx-auto w-full space-y-6">
+      <div class="card-dark p-6 space-y-6">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+          <h2 class="text-sm uppercase font-bold text-slate-300 tracking-wider flex items-center gap-2">
+            <i data-lucide="trending-up" class="w-5 h-5 text-primary"></i> Sales Analytics & Revenue Summary
+          </h2>
+          <span id="sales-date-label"
+            class="text-xs font-bold text-primary bg-primary/10 border border-primary/20 px-3 py-1 rounded-full">Today</span>
+        </div>
+
+        <!-- Date Picker & Quick-Action Buttons -->
+        <div class="space-y-2">
+          <label class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Filter by Date</label>
+          <input type="date" id="sales-date-filter" onchange="applySalesDateFilter()"
+            class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-primary">
+          <div class="flex gap-2 pt-1">
+            <button onclick="setSalesDateToday()"
+              class="flex-1 text-[10px] font-bold py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-slate-900 transition-all">
+              Today
+            </button>
+            <button onclick="setSalesDateYesterday()"
+              class="flex-1 text-[10px] font-bold py-1.5 rounded-lg bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all">
+              Yesterday
+            </button>
+            <button onclick="clearSalesDateFilter()"
+              class="flex-1 text-[10px] font-bold py-1.5 rounded-lg bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all">
+              Lifetime
+            </button>
+          </div>
+        </div>
+
+        <!-- Metric Rows & Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- Grand Total -->
+          <div
+            class="flex justify-between items-center p-4 bg-primary/5 border border-primary/20 rounded-2xl md:col-span-2">
+            <span class="text-sm font-bold text-primary flex items-center gap-2">
+              <i data-lucide="indian-rupee" class="w-5 h-5"></i> Grand Total Revenue
+            </span>
+            <span id="sales-total" class="text-2xl font-black text-primary">₹0.00</span>
+          </div>
+
+          <!-- Total Cash Collected -->
+          <div class="flex justify-between items-center p-4 bg-slate-900/60 border border-slate-800 rounded-xl">
+            <span class="text-xs text-slate-300 flex items-center gap-1.5">
+              <i data-lucide="banknote" class="w-4 h-4 text-emerald-400"></i> Total Cash Collected:
+            </span>
+            <span id="sales-cash" class="text-base font-black text-slate-100">₹0.00</span>
+          </div>
+
+          <!-- Total UPI Collected -->
+          <div class="flex justify-between items-center p-4 bg-slate-900/60 border border-slate-800 rounded-xl">
+            <span class="text-xs text-slate-300 flex items-center gap-1.5">
+              <i data-lucide="smartphone" class="w-4 h-4 text-blue-400"></i> Total UPI Collected:
+            </span>
+            <span id="sales-online" class="text-base font-black text-slate-100">₹0.00</span>
+          </div>
+
+          <!-- Delivered Orders Count -->
+          <div
+            class="flex justify-between items-center p-4 bg-slate-900/60 border border-slate-800 rounded-xl md:col-span-2">
+            <span class="text-xs text-slate-300 flex items-center gap-1.5">
+              <i data-lucide="package-check" class="w-4 h-4 text-emerald-400"></i> Delivered Orders Count:
+            </span>
+            <span id="sales-count" class="text-base font-black text-slate-100">0</span>
+          </div>
+        </div>
+
+        <!-- Hand Cash Custom Input -->
+        <div class="space-y-2 border-t border-slate-800 pt-4">
+          <label class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Hand Cash (Direct Sales / Offline
+            Recording)</label>
+          <div class="flex gap-2">
+            <input type="number" id="hand-cash-input" placeholder="Enter amount (₹)"
+              class="flex-1 px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white">
+            <button onclick="saveHandCash()"
+              class="bg-primary hover:bg-primary-dark text-slate-900 font-bold px-6 py-2.5 rounded-xl text-xs transition-all">
+              Save Entry
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 3: INVENTORY VIEW -->
+    <div id="inventory-view" class="flex-1 hidden p-6 space-y-6 max-w-6xl mx-auto w-full">
+      <!-- Top header cards -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Card 1: Add to scan barcode -->
+        <div onclick="openScannerModal('product')"
+          class="card-dark p-5 flex items-center justify-between cursor-pointer hover:border-primary/50 transition-all">
+          <div>
+            <p class="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Quick Action</p>
+            <h4 class="text-sm font-bold text-slate-200 mt-1">Scan Barcode to Add/Edit Item</h4>
+          </div>
+          <div
+            class="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+            <i data-lucide="barcode" class="w-6 h-6"></i>
+          </div>
+        </div>
+
+        <!-- Card 2: Total items live count -->
+        <div onclick="openAddItemModal()"
+          class="card-dark p-5 flex items-center justify-between cursor-pointer hover:border-primary/50 transition-all">
+          <div>
+            <p class="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Inventory Items Count</p>
+            <h4 id="total-items-badge" class="text-2xl font-black text-slate-200 mt-0.5">0</h4>
+          </div>
+          <div
+            class="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+            <i data-lucide="box" class="w-6 h-6"></i>
+          </div>
+        </div>
+      </div>
+
+      <!-- Inventory List panel -->
+      <div class="card-dark p-6 space-y-4">
+        <div
+          class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h3 class="font-bold text-sm uppercase text-slate-300 tracking-wider">Canteen Inventory List</h3>
+            <p class="text-xs text-slate-400 mt-0.5">Manage item pricing, stock quantities, and barcodes</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <!-- Inventory Scan Mode Toggle -->
+            <button id="inventory-scan-mode-btn" onclick="toggleInventoryScanMode()"
+              class="bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1.5">
+              <i data-lucide="scan-line" class="w-4 h-4"></i> Scan Mode: OFF
+            </button>
+            <button onclick="openAddItemModal()"
+              class="bg-primary/10 text-primary border border-primary/20 hover:bg-primary hover:text-slate-900 transition-all text-xs font-bold px-3 py-2 rounded-xl flex items-center gap-1.5">
+              <i data-lucide="plus-circle" class="w-4 h-4"></i> Add New Item
+            </button>
+          </div>
+        </div>
+
+        <!-- Inventory Scan Mode Active Banner -->
+        <div id="inventory-scan-mode-banner"
+          class="hidden flex items-center gap-3 bg-primary/10 border border-primary/30 rounded-xl px-4 py-2.5">
+          <span class="w-2 h-2 rounded-full bg-primary animate-pulse flex-shrink-0"></span>
+          <p class="text-xs font-bold text-primary">📡 Scan Mode Active — Point your scanner or camera at any product
+            barcode. Found items open the Edit form; new barcodes pre-fill the Add form.</p>
+          <button onclick="toggleInventoryScanMode()" class="ml-auto text-slate-400 hover:text-white flex-shrink-0">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <!-- Category Filters and Search -->
+        <div class="flex flex-col md:flex-row gap-4 items-center justify-between">
+          <div id="inventory-filter-bar" class="flex flex-wrap gap-2">
+            <!-- Rendered dynamically -->
+          </div>
+          <div class="relative w-full md:w-64">
+            <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
+              <i data-lucide="search" class="w-4 h-4"></i>
+            </span>
+            <input type="text" id="inventory-search" oninput="filterInventory()" placeholder="Search items..."
+              class="w-full pl-9 pr-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white">
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-slate-800 text-[10px] uppercase font-bold text-slate-400">
+                <th class="py-3">Item</th>
+                <th class="py-3">Category</th>
+                <th class="py-3 text-right">Price</th>
+                <th class="py-3 text-center">Stock Controls</th>
+                <th class="py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="inventory-table-body" class="divide-y divide-slate-800/40 text-xs">
+              <!-- Renders table rows dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 4: CATEGORIES MANAGEMENT VIEW -->
+    <div id="categories-view" class="flex-1 hidden p-6 space-y-6 max-w-5xl mx-auto w-full">
+      <!-- Header Card -->
+      <div class="card-dark p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div class="flex items-center gap-3.5">
+          <div
+            class="w-12 h-12 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+            <i data-lucide="tags" class="w-6 h-6"></i>
+          </div>
+          <div>
+            <h2 class="text-base font-bold text-slate-100 font-poppins">Manage Menu Categories</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Organize and classify canteen food & beverage menu items</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
+        <!-- Form to Add/Edit Category (Span 5) -->
+        <div class="md:col-span-5 card-dark p-6 space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+            <h3 id="category-form-title" class="font-bold text-sm text-slate-200">
+              Add New Category
+            </h3>
+            <span
+              class="text-[10px] font-bold text-primary bg-primary/10 border border-primary/20 px-2 py-0.5 rounded">Category
+              Form</span>
+          </div>
+
+          <form id="category-form" onsubmit="handleCategorySubmit(event)" class="space-y-4">
+            <input type="hidden" id="edit-category-id" value="">
+            <div class="space-y-1">
+              <label class="text-[10px] uppercase font-bold text-slate-400">Category Name</label>
+              <input type="text" id="category-name-input" placeholder="e.g. Snacks, Beverages, Bakery"
+                class="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+                required>
+            </div>
+            <div class="space-y-1">
+              <label class="text-[10px] uppercase font-bold text-slate-400">Emoji / Icon (Emoji preferred)</label>
+              <input type="text" id="category-icon-input" placeholder="e.g. 🍕, ☕, 🥤, 🍰"
+                class="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+                required>
+            </div>
+            <div class="flex gap-2 pt-2">
+              <button id="category-cancel-btn" type="button" onclick="cancelCategoryEdit()"
+                class="hidden flex-1 border border-slate-700 hover:bg-slate-800 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition-all">
+                Cancel
+              </button>
+              <button type="submit"
+                class="flex-1 bg-primary hover:bg-primary-dark text-slate-900 font-bold py-2.5 rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 shadow-lg">
+                <i data-lucide="plus-circle" class="w-4 h-4"></i> Save Category
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Categories List Table (Span 7) -->
+        <div class="md:col-span-7 card-dark p-6 space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+            <h3 class="font-bold text-sm text-slate-200">
+              Existing Categories
+            </h3>
+            <span class="text-xs text-slate-400">Live Sync</span>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="border-b border-slate-800 text-[10px] uppercase font-bold text-slate-400">
+                  <th class="py-2.5 pr-2">Icon</th>
+                  <th class="py-2.5 pr-4">Category Name</th>
+                  <th class="py-2.5 pr-4 text-center">Items Count</th>
+                  <th class="py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="category-list-body" class="divide-y divide-slate-800/40">
+                <!-- Filled dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 5: SETTINGS VIEW -->
+    <div id="settings-view" class="flex-1 hidden p-6 space-y-6 max-w-4xl mx-auto w-full">
+      <!-- Theme Controls -->
+      <div class="card-dark p-6 space-y-4">
+        <h3 class="font-bold text-sm text-slate-200 border-b border-slate-800 pb-2 flex items-center gap-2">
+          <i data-lucide="palette" class="w-4 h-4 text-primary"></i> Theme Controls
+        </h3>
+        <p class="text-xs text-slate-400">Select your preferred user interface appearance. This settings persists in
+          local storage.</p>
+        <div class="flex flex-wrap gap-3 pt-2">
+          <button onclick="setThemeMode('dark')" id="theme-btn-dark"
+            class="flex-1 min-w-[120px] bg-slate-900 hover:bg-slate-800 border border-primary text-primary font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all">
+            <i data-lucide="moon" class="w-4 h-4"></i> Dark Mode
+          </button>
+          <button onclick="setThemeMode('light')" id="theme-btn-light"
+            class="flex-1 min-w-[120px] bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all">
+            <i data-lucide="sun" class="w-4 h-4"></i> Light Mode
+          </button>
+          <button onclick="setThemeMode('reading')" id="theme-btn-reading"
+            class="flex-1 min-w-[120px] bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all">
+            <i data-lucide="book-open" class="w-4 h-4"></i> Reading Mode
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW 3: POST NOTICE VIEW -->
+    <div id="notices-view" class="flex-1 hidden p-6 max-w-lg mx-auto w-full">
+      <div class="card-dark p-6 space-y-6">
+        <div class="border-b border-slate-800 pb-3">
+          <h3 class="font-bold text-sm text-slate-200 flex items-center gap-2">
+            <i data-lucide="megaphone" class="w-5 h-5 text-primary"></i> Broadcast Campus Notice
+          </h3>
+          <p class="text-xs text-slate-400 mt-1">Send immediate updates directly to the students ordering app screen and
+            notification center.</p>
+        </div>
+
+        <form id="post-notice-form" onsubmit="handlePostNotice(event)" class="space-y-4">
+          <div class="space-y-1">
+            <label class="text-[10px] uppercase font-bold text-slate-400">Notice Title</label>
+            <input type="text" id="notice-title-input" placeholder="e.g. Ice Cream stock refilled!"
+              class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+              required>
+          </div>
+          <div class="space-y-1">
+            <label class="text-[10px] uppercase font-bold text-slate-400">Notice Message</label>
+            <textarea id="notice-message-input" rows="4"
+              placeholder="e.g. Fresh Mango Bars are back in stock. Hurry up before they run out!"
+              class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+              required></textarea>
+          </div>
+          <button type="submit"
+            class="w-full bg-primary hover:bg-primary-dark text-slate-900 font-bold py-3 rounded-xl transition-all text-xs flex items-center justify-center gap-2 shadow-lg">
+            <i data-lucide="send" class="w-4 h-4"></i> Broadcast Notice
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- VIEW 4: ORDER HISTORY VIEW -->
+    <!-- VIEW 4: ORDER HISTORY VIEW -->
+    <div id="history-view" class="flex-1 hidden p-6 space-y-6 max-w-7xl mx-auto w-full">
+
+      <!-- Header + Controls -->
+      <div class="card-dark p-5 space-y-4">
+        <div
+          class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h2 class="text-base font-bold text-slate-100 flex items-center gap-2 font-poppins">
+              <i data-lucide="history" class="w-5 h-5 text-primary"></i> Order History & Transaction Logs
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">Audit and review all online mobile orders and counter walk-in POS
+              transactions.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="history-active-range-label"
+              class="text-xs font-bold text-primary bg-primary/10 border border-primary/20 px-3.5 py-1.5 rounded-full">
+              All Time
+            </span>
+          </div>
+        </div>
+
+        <!-- Filter Controls Row -->
+        <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+          <!-- Preset Buttons -->
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider mr-1">Preset:</span>
+            <button id="history-btn-all" type="button" onclick="setHistoryFilter('all')"
+              class="text-xs font-bold px-3 py-1.5 rounded-xl bg-primary text-slate-900 shadow transition-all">
+              All Time
+            </button>
+            <button id="history-btn-today" type="button" onclick="setHistoryFilter('today')"
+              class="text-xs font-bold px-3 py-1.5 rounded-xl bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all">
+              Today
+            </button>
+            <button id="history-btn-week" type="button" onclick="setHistoryFilter('week')"
+              class="text-xs font-bold px-3 py-1.5 rounded-xl bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all">
+              This Week
+            </button>
+            <button id="history-btn-yesterday" type="button" onclick="setHistoryFilter('yesterday')"
+              class="text-xs font-bold px-3 py-1.5 rounded-xl bg-slate-900 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all">
+              Yesterday
+            </button>
+          </div>
+
+          <!-- Custom Range + Search Row -->
+          <div class="flex flex-wrap items-center gap-2.5">
+            <!-- Custom Date Range -->
+            <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700 p-1 rounded-xl">
+              <span class="text-[10px] uppercase font-bold text-slate-400 px-1.5">From:</span>
+              <input type="date" id="history-date-start" onchange="handleHistoryCustomDateChange()"
+                class="px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs text-white focus:outline-none focus:border-primary">
+              <span class="text-[10px] uppercase font-bold text-slate-400 px-1">To:</span>
+              <input type="date" id="history-date-end" onchange="handleHistoryCustomDateChange()"
+                class="px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-xs text-white focus:outline-none focus:border-primary">
+            </div>
+
+            <!-- Status Dropdown Filter -->
+            <select id="history-status-filter" onchange="loadHistoryView()"
+              class="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-primary">
+              <option value="ALL">All Statuses</option>
+              <option value="DELIVERED">Delivered</option>
+              <option value="CANCELLED">Cancelled</option>
+              <option value="PENDING_PICKUP">Pending</option>
+            </select>
+
+            <!-- Order Type Dropdown Filter -->
+            <select id="history-type-filter" onchange="filterHistoryTable()"
+              class="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-primary">
+              <option value="ALL">All Types</option>
+              <option value="ONLINE">📱 Online App</option>
+              <option value="POS">⚡ Walk-in POS</option>
+            </select>
+
+            <!-- Search Bar -->
+            <div class="relative flex-1 sm:w-56 min-w-[160px]">
+              <i data-lucide="search"
+                class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none"></i>
+              <input type="text" id="history-search" placeholder="Search token, student, item..."
+                oninput="filterHistoryTable()"
+                class="w-full pl-8 pr-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-primary">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary Stats Bar -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- Card 1: Total Revenue -->
+        <div class="card-dark p-4 space-y-1 bg-primary/5 border-primary/20">
+          <p class="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Total Revenue</p>
+          <p id="history-stat-total" class="text-2xl font-black text-primary font-poppins">₹0.00</p>
+          <p class="text-[10px] text-slate-400">Paid transactions</p>
+        </div>
+
+        <!-- Card 2: Total Orders Count -->
+        <div class="card-dark p-4 space-y-1">
+          <p class="text-[9px] uppercase font-bold text-slate-400 tracking-wider">Total Orders</p>
+          <p id="history-stat-count" class="text-2xl font-black text-slate-100 font-poppins">0</p>
+          <p class="text-[10px] text-slate-400">
+            <span id="history-stat-delivered-count" class="text-emerald-400 font-bold">0</span> delivered &bull; <span
+              id="history-stat-cancelled-count" class="text-rose-400 font-bold">0</span> cancelled
+          </p>
+        </div>
+
+        <!-- Card 3: Online App Split -->
+        <div class="card-dark p-4 space-y-1">
+          <p class="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
+            <i data-lucide="smartphone" class="w-3.5 h-3.5 text-emerald-400"></i> Online App Sales
+          </p>
+          <p id="history-stat-online" class="text-2xl font-black text-emerald-400 font-poppins">₹0.00</p>
+          <p class="text-[10px] text-slate-400">
+            <span id="history-stat-online-count" class="font-bold text-slate-200">0</span> app orders
+          </p>
+        </div>
+
+        <!-- Card 4: Walk-in POS Split -->
+        <div class="card-dark p-4 space-y-1">
+          <p class="text-[9px] uppercase font-bold text-slate-400 tracking-wider flex items-center gap-1.5">
+            <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i> Walk-in POS Sales
+          </p>
+          <p id="history-stat-pos" class="text-2xl font-black text-amber-400 font-poppins">₹0.00</p>
+          <p class="text-[10px] text-slate-400">
+            <span id="history-stat-pos-count" class="font-bold text-slate-200">0</span> counter sales
+          </p>
+        </div>
+      </div>
+
+      <!-- History Table Container -->
+      <div class="card-dark p-6 space-y-4">
+        <div id="history-loading-state" class="hidden text-center py-16">
+          <div class="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p class="text-xs text-slate-400 mt-3">Loading transactions...</p>
+        </div>
+
+        <div id="history-empty-state" class="hidden text-center py-16 space-y-3">
+          <i data-lucide="package-x" class="w-12 h-12 mx-auto text-slate-600"></i>
+          <p class="font-semibold text-sm text-slate-300">No records found</p>
+          <p class="text-xs text-slate-500">No orders match the selected timeframe or filter.</p>
+          <button type="button" onclick="setHistoryFilter('all')"
+            class="text-xs text-primary font-bold hover:underline">
+            View All Time Records
+          </button>
+        </div>
+
+        <div id="history-table-wrapper" class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="border-b border-slate-800 text-[10px] uppercase font-bold text-slate-400">
+                <th class="py-3 pr-4 whitespace-nowrap">Token</th>
+                <th class="py-3 pr-4 whitespace-nowrap">Type</th>
+                <th class="py-3 pr-4 whitespace-nowrap">Customer / Student</th>
+                <th class="py-3 pr-4">Items Ordered</th>
+                <th class="py-3 pr-4 text-center whitespace-nowrap">Payment</th>
+                <th class="py-3 pr-4 text-right whitespace-nowrap">Total</th>
+                <th class="py-3 pr-4 text-center whitespace-nowrap">Timestamp</th>
+                <th class="py-3 text-center whitespace-nowrap">Status</th>
+              </tr>
+            </thead>
+            <tbody id="history-table-body" class="divide-y divide-slate-800/40">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ==================== SCREEN ③: ADD ITEM MODAL ==================== -->
+  <div id="add-item-modal" class="fixed inset-0 z-[1500] flex items-center justify-center modal-overlay hidden">
+    <div
+      class="bg-darksurface border border-slate-700 w-full max-w-md p-6 rounded-2xl shadow-2xl relative space-y-6 mx-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-sm text-slate-200">Scan or Add Item</h3>
+        <button onclick="closeAddItemModal()" class="text-slate-400 hover:text-white">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <form id="add-item-form" class="space-y-4" onsubmit="handleProductAdd(event)">
+        <!-- Category selector -->
+        <div class="space-y-1">
+          <label class="text-[9px] uppercase font-bold text-slate-400">category</label>
+          <select id="new-prod-category"
+            class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+            required>
+            <!-- Populated dynamically -->
+          </select>
+        </div>
+
+        <div class="space-y-1">
+          <label class="text-[9px] uppercase font-bold text-slate-400">Item Name</label>
+          <input type="text" id="new-prod-name" placeholder="e.g. Samosa"
+            class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+            required>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div class="space-y-1">
+            <label class="text-[9px] uppercase font-bold text-slate-400">Stock</label>
+            <input type="number" id="new-prod-stock" placeholder="e.g. 50"
+              class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+              required>
+          </div>
+          <div class="space-y-1">
+            <label class="text-[9px] uppercase font-bold text-slate-400">Price (₹)</label>
+            <input type="number" step="0.01" id="new-prod-price" placeholder="e.g. 15.00"
+              class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+              required>
+          </div>
+        </div>
+
+        <div class="space-y-1">
+          <label class="text-[9px] uppercase font-bold text-slate-400">Barcode Identifier</label>
+          <div class="flex gap-2">
+            <input type="text" id="new-prod-barcode" placeholder="e.g. BC-MAN-1234"
+              class="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white font-mono">
+            <button type="button" onclick="openScannerModal('product_prefill')"
+              class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold px-3 rounded-lg text-xs flex items-center justify-center">
+              <i data-lucide="camera" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="space-y-1">
+          <label class="text-[9px] uppercase font-bold text-slate-400">Pic (Image Selector or URL)</label>
+          <input type="file" id="new-prod-file" accept="image/*"
+            class="w-full text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-primary/10 file:text-primary hover:file:bg-primary/20 cursor-pointer mb-2">
+          <input type="text" id="new-prod-image-url" placeholder="Or paste image URL directly"
+            class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white">
+        </div>
+
+        <button type="submit"
+          class="w-full bg-primary hover:bg-primary-dark text-slate-900 font-bold py-2.5 rounded-xl transition-all text-xs shadow-lg">
+          Save Item
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== SCREEN ③-B: EDIT ITEM MODAL ==================== -->
+  <div id="edit-item-modal" class="fixed inset-0 z-[1500] flex items-center justify-center modal-overlay hidden">
+    <div
+      class="bg-darksurface border border-slate-700 w-full max-w-md p-6 rounded-2xl shadow-2xl relative space-y-6 mx-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-sm text-slate-200">Edit Item</h3>
+        <button type="button" onclick="closeEditItemModal()" class="text-slate-400 hover:text-white">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <form id="edit-item-form" class="space-y-4" onsubmit="handleProductEdit(event)">
+        <input type="hidden" id="edit-prod-id">
+
+        <!-- Category selector -->
+        <div class="space-y-1">
+          <label class="text-[9px] uppercase font-bold text-slate-400">category</label>
+          <select id="edit-prod-category"
+            class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+            required>
+            <!-- Populated dynamically -->
+          </select>
+        </div>
+
+        <div class="space-y-1">
+          <label class="text-[9px] uppercase font-bold text-slate-400">Item Name</label>
+          <input type="text" id="edit-prod-name" placeholder="e.g. Samosa"
+            class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+            required>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4">
+          <div class="space-y-1">
+            <label class="text-[9px] uppercase font-bold text-slate-400">Stock</label>
+            <input type="number" id="edit-prod-stock" placeholder="e.g. 50"
+              class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+              required>
+          </div>
+          <div class="space-y-1">
+            <label class="text-[9px] uppercase font-bold text-slate-400">Price (₹)</label>
+            <input type="number" step="0.01" id="edit-prod-price" placeholder="e.g. 15.00"
+              class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
+              required>
+          </div>
+        </div>
+
+        <div class="space-y-1">
+          <label class="text-[9px] uppercase font-bold text-slate-400">Barcode Identifier</label>
+          <div class="flex gap-2">
+            <input type="text" id="edit-prod-barcode" placeholder="e.g. BC-MAN-1234"
+              class="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white font-mono">
+            <button type="button" onclick="openScannerModal('product_edit_prefill')"
+              class="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold px-3 rounded-lg text-xs flex items-center justify-center"
+              title="Scan barcode with camera">
+              <i data-lucide="camera" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="space-y-1">
+          <label class="text-[9px] uppercase font-bold text-slate-400">Pic (Image URL)</label>
+          <input type="text" id="edit-prod-image-url" placeholder="Paste image URL here"
+            class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white">
+        </div>
+
+        <div class="flex gap-3 pt-2">
+          <button type="button" onclick="closeEditItemModal()"
+            class="flex-1 border border-slate-700 hover:bg-slate-800 text-slate-300 font-bold py-2 rounded-xl text-xs transition-all">
+            Cancel
+          </button>
+          <button type="submit"
+            class="flex-1 bg-primary hover:bg-primary-dark text-slate-900 font-bold py-2 rounded-xl text-xs transition-all shadow-lg">
+            Save Changes
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== SCREEN ④: ORDER DETAILS POPUP ==================== -->
+
+  <div id="order-detail-modal" class="fixed inset-0 z-[1600] flex items-center justify-center modal-overlay hidden">
+    <div
+      class="bg-darksurface border border-slate-700 w-full max-w-md p-6 rounded-2xl shadow-2xl relative space-y-6 mx-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div>
+          <h3 class="font-bold text-sm text-slate-200">Order Verification</h3>
+          <p class="text-[10px] text-slate-500 mt-0.5">Scanned via QR / Token Lookup</p>
+        </div>
+        <button onclick="closeOrderDetailModal()" class="text-slate-400 hover:text-white">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="space-y-4" id="order-detail-modal-body">
+        <!-- Populated dynamically -->
+      </div>
+
+      <!-- Enter-to-deliver keyboard hint (shown by JS when order is not delivered) -->
+      <div id="enter-deliver-hint" class="hidden flex items-center justify-center gap-1.5 text-[10px] text-slate-500">
+        <kbd class="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 font-mono text-[9px]">Enter</kbd>
+        <span>to deliver instantly</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- CAMERA / UPLOAD SCANNER OVERLAY MODAL -->
+  <div id="scanner-modal" class="fixed inset-0 z-[1500] flex items-center justify-center modal-overlay hidden"
+    onclick="if (event.target === this) closeScannerModal()">
+    <div
+      class="bg-darksurface border border-slate-700 w-full max-w-md p-6 rounded-2xl shadow-2xl relative space-y-4 mx-4">
+      <div class="flex items-center justify-between">
+        <h3 id="scanner-modal-title" class="font-bold text-sm text-slate-200">Scan Student QR Code</h3>
+        <button onclick="closeScannerModal()" class="text-slate-400 hover:text-white">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Segmented Scanner Mode Tabs -->
+      <div class="flex bg-slate-900 p-1 rounded-xl border border-slate-800 gap-1">
+        <button id="scanner-tab-camera" onclick="switchScannerTab('camera')"
+          class="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold bg-primary text-slate-900 transition-all shadow">
+          <i data-lucide="camera" class="w-4 h-4"></i> Live Camera
+        </button>
+        <button id="scanner-tab-upload" onclick="switchScannerTab('upload')"
+          class="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition-all">
+          <i data-lucide="upload" class="w-4 h-4"></i> Upload Photo / File
+        </button>
+      </div>
+
+      <!-- VIEW A: LIVE CAMERA FEED -->
+      <div id="scanner-camera-view"
+        class="w-full aspect-square bg-slate-900 border border-slate-800 rounded-xl overflow-hidden relative">
+        <div id="qr-reader" class="w-full h-full"></div>
+      </div>
+
+      <!-- VIEW B: FILE UPLOAD DROPZONE -->
+      <div id="scanner-upload-view"
+        class="hidden w-full aspect-square bg-slate-900 border-2 border-dashed border-slate-700 hover:border-primary/60 rounded-xl flex flex-col items-center justify-center p-6 text-center cursor-pointer transition-all relative group"
+        onclick="document.getElementById('qr-file-input').click()"
+        ondragover="event.preventDefault(); this.classList.add('border-primary');"
+        ondragleave="this.classList.remove('border-primary');" ondrop="handleQrFileDrop(event)">
+        <input type="file" id="qr-file-input" accept="image/*" class="hidden" onchange="handleQrFileUpload(event)">
+
+        <div
+          class="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary group-hover:scale-110 transition-transform mb-3">
+          <i data-lucide="image" class="w-7 h-7"></i>
+        </div>
+
+        <h4 class="text-xs font-bold text-slate-200">Click or Drag Photo Here</h4>
+        <p class="text-[10px] text-slate-400 mt-1 max-w-[230px]">
+          Upload a screenshot, barcode photo, or saved student QR code image (PNG, JPG, WebP)
+        </p>
+
+        <button type="button"
+          class="mt-4 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-primary border border-slate-700 font-bold rounded-lg text-xs transition-all flex items-center gap-1.5 pointer-events-none">
+          <i data-lucide="folder-open" class="w-3.5 h-3.5"></i> Browse Image File
+        </button>
+      </div>
+
+      <!-- MANUAL TOKEN INPUT SECTION (Only shown for Order Verification) -->
+      <div id="scanner-manual-section" class="space-y-2 border-t border-slate-800 pt-4">
+        <p id="scanner-manual-label" class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Manual Token
+          Input</p>
+        <div class="flex gap-2">
+          <input type="text" id="scanner-manual-input" placeholder="e.g. #TK-108"
+            class="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white font-mono uppercase">
+          <button onclick="handleManualTokenSubmit()"
+            class="bg-primary hover:bg-primary-dark text-slate-900 font-bold px-4 py-2 rounded-lg text-xs">
+            Verify
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- JavaScript client file link -->
+  <script src="manager.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,288 @@
+/* Campus Canteen Manager CSS Custom Stylesheet */
+/* Theme: Modern Emerald Green & Deep Slate */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Poppins:wght@400;500;600;700;800;900&display=swap');
+
+:root {
+  /* Core Emerald Palette */
+  --primary-green: #10B981;
+  --primary-hover: #059669;
+  --bg-main: #070D0B;
+  --bg-card: #111E19;
+  --bg-card-hover: #162721;
+  --border-subtle: #1E3A30;
+  --text-main: #F1F5F9;
+  --text-muted: #86A79C;
+
+  /* Backward Compatible Aliases */
+  --bg-primary: var(--bg-main);
+  --bg-secondary: var(--bg-card);
+  --bg-tertiary: var(--bg-card-hover);
+  --accent-green: var(--primary-green);
+  --accent-green-dark: var(--primary-hover);
+  --accent-orange: #f97316;
+  --accent-red: #ef4444;
+  --text-primary: var(--text-main);
+  --text-secondary: var(--text-muted);
+  --border-color: var(--border-subtle);
+}
+
+body {
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  font-family: 'Inter', sans-serif;
+  overflow-x: hidden;
+}
+
+/* Header & Surface Overrides */
+.bg-darksurface {
+  background-color: var(--bg-card) !important;
+}
+
+/* Card Styling with emerald subtle border */
+.card-dark {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.4);
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.15s ease;
+}
+
+.card-dark:hover {
+  border-color: #264a3d;
+}
+
+/* Primary Action Buttons */
+.bg-primary {
+  background-color: var(--primary-green) !important;
+  color: #070D0B !important;
+}
+
+.bg-primary:hover {
+  background-color: var(--primary-hover) !important;
+}
+
+.text-primary {
+  color: var(--primary-green) !important;
+}
+
+.border-primary {
+  border-color: var(--primary-green) !important;
+}
+
+/* Input Fields & Textareas */
+input, select, textarea {
+  background-color: #0b1512 !important;
+  border-color: var(--border-subtle) !important;
+  color: var(--text-main) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--primary-green) !important;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25) !important;
+}
+
+/* Background Slate Overrides to Deep Slate Emerald */
+.bg-slate-900 {
+  background-color: #0a1310 !important;
+}
+
+.bg-slate-800 {
+  background-color: #12211c !important;
+}
+
+.bg-slate-800\/40 {
+  background-color: rgba(18, 33, 28, 0.4) !important;
+}
+
+.hover\:bg-slate-800:hover {
+  background-color: #162922 !important;
+}
+
+.hover\:bg-slate-700:hover {
+  background-color: #1a332a !important;
+}
+
+.border-slate-800, .border-slate-700 {
+  border-color: var(--border-subtle) !important;
+}
+
+.text-slate-400 {
+  color: var(--text-muted) !important;
+}
+
+.text-slate-300 {
+  color: #c9ded7 !important;
+}
+
+.text-slate-200 {
+  color: #e5f0ec !important;
+}
+
+.text-slate-100 {
+  color: var(--text-main) !important;
+}
+
+/* Loading overlay */
+#loading-overlay {
+  background-color: rgba(7, 13, 11, 0.88);
+  backdrop-filter: blur(4px);
+}
+
+/* Custom Scrollbar in Emerald */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-main);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #284e41;
+}
+
+/* Modal overlay & Emerald Glow Container */
+.modal-overlay {
+  background-color: rgba(7, 13, 11, 0.85);
+  backdrop-filter: blur(5px);
+}
+
+#order-detail-modal > div,
+#scanner-modal > div,
+#add-item-modal > div,
+#edit-item-modal > div,
+#login-screen > div {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 20px 0 rgba(16, 185, 129, 0.08);
+}
+
+/* Toast container */
+#toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+}
+
+.toast {
+  animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 15px 25px -5px rgba(0, 0, 0, 0.5);
+  min-width: 260px;
+}
+
+.toast-success {
+  background-color: #0a241b;
+  border-left: 4px solid var(--primary-green);
+  color: #a7f3d0;
+  border: 1px solid #144937;
+  border-left-width: 4px;
+}
+
+.toast-error {
+  background-color: #2b0f0f;
+  border-left: 4px solid var(--accent-red);
+  color: #fca5a5;
+  border: 1px solid #541c1c;
+  border-left-width: 4px;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(20px) scale(0.96);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* Theme styling overrides */
+body.theme-light {
+  --bg-main: #f8fafc;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f1f5f9;
+  --border-subtle: #e2e8f0;
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --border-color: #e2e8f0;
+}
+
+body.theme-light input, 
+body.theme-light select, 
+body.theme-light textarea {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+body.theme-light input:focus, 
+body.theme-light select:focus, 
+body.theme-light textarea:focus {
+  border-color: var(--primary-green) !important;
+}
+
+body.theme-light .card-dark {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
+}
+
+body.theme-reading {
+  --bg-main: #f4ece1;
+  --bg-card: #fdf6e3;
+  --bg-card-hover: #f5eedb;
+  --border-subtle: #dec89c;
+  --text-main: #5c3a21;
+  --text-muted: #8c6a51;
+  --bg-primary: #f4ece1;
+  --bg-secondary: #fdf6e3;
+  --bg-tertiary: #e6d3a7;
+  --text-primary: #5c3a21;
+  --text-secondary: #8c6a51;
+  --border-color: #dec89c;
+}
+
+body.theme-reading input, 
+body.theme-reading select, 
+body.theme-reading textarea {
+  background-color: #eedfcc !important;
+  color: #5c3a21 !important;
+  border-color: #dec89c !important;
+}
+
+body.theme-reading input:focus, 
+body.theme-reading select:focus, 
+body.theme-reading textarea:focus {
+  border-color: var(--primary-green) !important;
+}
+
+body.theme-reading .card-dark {
+  box-shadow: 0 4px 6px -1px rgba(92, 58, 33, 0.05);
+}
+
+/* Branding Logo */
+.header-canteen-logo {
+  height: 38px;
+  width: auto;
+  object-fit: contain;
+  vertical-align: middle;
+}

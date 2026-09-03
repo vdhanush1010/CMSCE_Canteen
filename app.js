@@ -1,0 +1,2593 @@
+// Hostel Canteen Student Ordering Application - Centralized SPA Architecture
+
+// 1. Supabase Client Configuration Credentials
+const SUPABASE_URL = 'https://llbegpqowjvsadbundrn.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxsYmVncHFvd2p2c2FkYnVuZHJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3Njg4NzAsImV4cCI6MjEwMjM0NDg3MH0.SGoLEoE5PP_Ex0C7tOXrwvcol2vxxOvOFPoSGfD93VA';
+var supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// 2. Global SPA Application State
+let currentStudent = null;
+let products = [];
+let categories = [];
+let cart = {}; // product_id -> quantity
+let orders = [];
+let currentCategory = null;
+let currentSort = "default";
+let currentPaymentMode = "CASH";
+let ordersSubscription = null;
+let cashCountdownInterval = null;
+let qrCountdownInterval = null;
+const CASH_EXPIRY_WINDOW_SECONDS = 30 * 60; // 30 minutes (1800 seconds)
+let pendingOrderToken = "";
+let isCanteenOpen = true;
+
+// Online Payment Gateway State (UPI App Intent & Dynamic QR Dual Engine)
+let activePaymentSession = null;
+let paymentGatewayTab = "upi_app"; // 'upi_app' | 'dynamic_qr'
+let qrExpiryCountdownInterval = null;
+let qrStatusPollInterval = null;
+const DYNAMIC_QR_DURATION_SECONDS = 180; // 3 minutes
+
+
+// 3. Centralized Routing System
+const router = {
+  currentScreen: null,
+  navigateTo(screenId) {
+    showScreen(screenId);
+    this.currentScreen = screenId;
+  }
+};
+
+// Safe Navigation wrappers & Fallback helper
+function navigateTo(screenId) {
+  showScreen(screenId);
+}
+window.goHome = () => showScreen('home-screen');
+
+function switchScreen(screenId) {
+  showScreen(screenId);
+}
+
+function showScreen(screenId) {
+  const screens = ['login-screen', 'home-screen', 'category-screen', 'cart-screen', 'qr-screen', 'profile-screen', 'notices-screen'];
+  screens.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      if (id === screenId) {
+        // Remove hidden, add active — CSS .screen.active { display: flex } takes full control
+        el.classList.remove('hidden');
+        el.classList.add('active');
+        el.style.removeProperty('display');
+      } else {
+        // Hide by removing active and ensuring hidden class is present
+        el.classList.remove('active');
+        el.classList.add('hidden');
+        el.style.removeProperty('display');
+      }
+    }
+  });
+  window.scrollTo(0, 0);
+  toggleDrawer(false);
+  lucide.createIcons();
+}
+
+
+// 4. Loading Indicators Toggler
+function showLoading(show) {
+  const loader = document.getElementById("loading-overlay");
+  if (loader) {
+    if (show) {
+      loader.classList.remove("hidden");
+    } else {
+      loader.classList.add("hidden");
+    }
+  }
+}
+
+// Toast Notification Helper
+function showToast(message, type = "success") {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  
+  const icon = type === "success" ? "check-circle" : "alert-circle";
+  toast.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4"></i> <span>${message}</span>`;
+  
+  container.appendChild(toast);
+  lucide.createIcons();
+  
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+// 5. Backend REST API Dynamic Data Fetches
+let notices = [];
+const API_BASE = (typeof window !== 'undefined' && window.location && window.location.protocol.startsWith('http'))
+  ? `${window.location.origin}/api`
+  : 'http://localhost:5000/api';
+
+async function fetchCategories() {
+  try {
+    const res = await fetch(`${API_BASE}/categories`);
+    const data = await res.json();
+    if (res.ok) {
+      categories = data || [];
+    } else {
+      console.error('Error categories:', data.error);
+      showToast(`Failed to load categories: ${data.error}`, 'error');
+    }
+  } catch (err) {
+    console.error('Categories API error:', err);
+    showToast('Failed to connect to backend server', 'error');
+  }
+}
+
+async function fetchProducts() {
+  try {
+    const res = await fetch(`${API_BASE}/products`);
+    const data = await res.json();
+    if (res.ok) {
+      products = data || [];
+    } else {
+      console.error('Error products:', data.error);
+      showToast(`Failed to load products: ${data.error}`, 'error');
+    }
+  } catch (err) {
+    console.error('Products API error:', err);
+  }
+}
+
+async function fetchNotices() {
+  try {
+    const res = await fetch(`${API_BASE}/notices`);
+    const data = await res.json();
+    if (res.ok) {
+      notices = data || [];
+      updateNoticesUI();
+    }
+  } catch (err) {
+    console.warn("Could not load notices from server", err);
+    notices = [];
+  }
+}
+
+async function initDatabase() {
+  await fetchCategories();
+  await fetchProducts();
+  await fetchNotices();
+
+  // Instant Guest Mode detection: check URL parameters or localStorage
+  const urlParams = new URLSearchParams(window.location.search);
+  const isGuestParam = urlParams.get('guest') === 'true' || window.location.hash === '#guest';
+  const isStoredGuest = localStorage.getItem("isGuest") === "true";
+
+  if (isGuestParam && !isStoredGuest) {
+    startGuestSession();
+    return;
+  }
+
+  if (isStoredGuest) {
+    const guestStudent = localStorage.getItem("guestStudent");
+    if (guestStudent) {
+      currentStudent = JSON.parse(guestStudent);
+    } else {
+      const randNum = Math.floor(1000 + Math.random() * 9000);
+      currentStudent = { id: null, isGuest: true, name: `Guest_${randNum}`, reg_no: 'GUEST', department: 'Table QR Guest' };
+    }
+    updateDrawerInfo();
+    setupGeneralRealtimeListeners();
+    await fetchCanteenStatus();
+    navigateHome();
+    return;
+  }
+
+  const storedStudent = sessionStorage.getItem("session_student");
+  if (storedStudent) {
+    currentStudent = JSON.parse(storedStudent);
+    try {
+      const res = await fetch(`${API_BASE}/student/${currentStudent.id}`);
+      const data = await res.json();
+      if (res.ok && data) {
+        currentStudent = data;
+        sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+      }
+    } catch (err) {
+      console.warn("Could not sync student profile with backend", err);
+    }
+    updateDrawerInfo();
+    setupRealtimeListener();
+    await fetchStudentOrders();
+    await fetchCanteenStatus();
+    navigateHome();
+  } else {
+    setupGeneralRealtimeListeners();
+    await fetchCanteenStatus();
+    showScreen("login-screen");
+  }
+}
+
+function startGuestSession() {
+  const randNum = Math.floor(1000 + Math.random() * 9000);
+  const guestTag = `Guest_${randNum}`;
+  const guestUser = {
+    id: null,
+    isGuest: true,
+    name: guestTag,
+    reg_no: 'GUEST',
+    department: 'Table QR Guest'
+  };
+
+  localStorage.setItem('isGuest', 'true');
+  localStorage.setItem('guestStudent', JSON.stringify(guestUser));
+  currentStudent = guestUser;
+
+  updateDrawerInfo();
+  setupGeneralRealtimeListeners();
+  fetchCanteenStatus();
+  navigateHome();
+  showToast(`⚡ Welcome! Ordering as ${guestTag} (Guest Mode)`, "success");
+}
+
+async function fetchStudentOrders() {
+  if (!currentStudent || currentStudent.isGuest || !currentStudent.id) {
+    orders = [];
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/orders?student_id=${currentStudent.id}`);
+    const data = await res.json();
+    if (res.ok) {
+      orders = (data || []).map(o => ({
+        id: o.id,
+        student_id: o.student_id,
+        token_number: o.token_number,
+        total_amount: parseFloat(o.total_amount),
+        payment_method: o.payment_method,
+        payment_status: o.payment_status,
+        order_status: o.order_status,
+        created_at: o.created_at,
+        qr_code_data: o.qr_code_data,
+        items: (o.order_items || []).map(oi => ({
+          id: oi.id,
+          product_id: oi.product_id,
+          name: oi.products ? oi.products.name : 'Unknown Product',
+          quantity: oi.quantity,
+          unit_price: parseFloat(oi.unit_price)
+        }))
+      }));
+    } else {
+      console.error('Error orders:', data.error);
+    }
+  } catch (err) {
+    console.error('Fetch student orders error:', err);
+  }
+}
+
+// Global general realtime listeners for categories, products, and notices (active even when logged out)
+let generalRealtimeChannel = null;
+function setupGeneralRealtimeListeners() {
+  if (generalRealtimeChannel) {
+    supabase.removeChannel(generalRealtimeChannel);
+  }
+
+  generalRealtimeChannel = supabase
+    .channel('general_realtime_sync')
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'categories' },
+      async () => {
+        await fetchCategories();
+        if (router.currentScreen === 'home-screen' || document.getElementById("home-screen").classList.contains("active")) {
+          renderCategoriesGrid();
+        }
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'products' },
+      async () => {
+        await fetchProducts();
+        if (router.currentScreen === 'category-screen' || document.getElementById("category-screen").classList.contains("active")) {
+          renderCategoryProducts();
+        }
+        if (router.currentScreen === 'home-screen' || document.getElementById("home-screen").classList.contains("active")) {
+          renderFrequentlyBought();
+        }
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'notices' },
+      async (payload) => {
+        console.log("New notice broadcasted:", payload.new);
+        await fetchNotices();
+        // Trigger browser audio notification if possible
+        try {
+          const synth = window.speechSynthesis;
+          if (synth) {
+            const utter = new SpeechSynthesisUtterance("New canteen announcement: " + payload.new.title);
+            utter.rate = 1.1;
+            synth.speak(utter);
+          }
+        } catch (e) {}
+        showToast(`📢 Canteen Broadcast: ${payload.new.title}`, "success");
+      }
+    )
+    .subscribe();
+}
+
+function setupRealtimeListener() {
+  // Setup the general non-student specific listeners first
+  setupGeneralRealtimeListeners();
+
+  if (!currentStudent || currentStudent.isGuest || !currentStudent.id) return;
+
+  if (ordersSubscription) {
+    supabase.removeChannel(ordersSubscription);
+  }
+
+  ordersSubscription = supabase
+    .channel('orders_realtime')
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'orders',
+        filter: `student_id=eq.${currentStudent.id}`
+      },
+      async (payload) => {
+        console.log('Realtime update received:', payload);
+        const updatedOrder = payload.new;
+        await fetchStudentOrders();
+        
+        if (document.getElementById("cart-history-view") && !document.getElementById("cart-history-view").classList.contains("hidden")) {
+          renderCartHistoryView();
+        }
+        
+        if (updatedOrder.order_status === "DELIVERED") {
+          showToast(`Order ${updatedOrder.token_number} is DELIVERED! Pick it up at the counter.`, "success");
+          const activeScreen = document.getElementById("qr-screen");
+          const activeTokenEl = document.getElementById("confirm-token-number");
+          if (activeScreen && !activeScreen.classList.contains("hidden") && activeTokenEl && activeTokenEl.innerText === updatedOrder.token_number) {
+            showConfirmationScreen(updatedOrder);
+          }
+        } else if (updatedOrder.order_status === "CANCELLED") {
+          const isCash = updatedOrder.payment_method === 'CASH_AT_COUNTER';
+          showToast(`Order ${updatedOrder.token_number} has EXPIRED: 30-minute cash payment window passed.`, "error");
+          
+          // If the student is currently on the QR screen for this order, refresh it to show the expired state
+          const activeScreen = document.getElementById("qr-screen");
+          const activeTokenEl = document.getElementById("confirm-token-number");
+          if (activeScreen && !activeScreen.classList.contains("hidden") && activeTokenEl && activeTokenEl.innerText === updatedOrder.token_number) {
+            showConfirmationScreen(updatedOrder);
+          }
+        } else {
+          showToast(`Order ${updatedOrder.token_number} status updated to ${updatedOrder.order_status}.`, "success");
+          const activeScreen = document.getElementById("qr-screen");
+          const activeTokenEl = document.getElementById("confirm-token-number");
+          if (activeScreen && !activeScreen.classList.contains("hidden") && activeTokenEl && activeTokenEl.innerText === updatedOrder.token_number) {
+            showConfirmationScreen(updatedOrder);
+          }
+        }
+      }
+    )
+    .subscribe();
+}
+
+// Window unload cleanup to prevent memory leaks
+window.addEventListener('beforeunload', () => {
+  if (generalRealtimeChannel) {
+    supabase.removeChannel(generalRealtimeChannel);
+    generalRealtimeChannel = null;
+  }
+  if (ordersSubscription) {
+    supabase.removeChannel(ordersSubscription);
+    ordersSubscription = null;
+  }
+});
+
+// 6. Navigation Drawer & Profile Functions
+function toggleDrawer(open) {
+  const overlay = document.getElementById("drawer-overlay");
+  const drawer = document.getElementById("drawer");
+  if (open) {
+    overlay.classList.add("active");
+    drawer.classList.add("active");
+  } else {
+    overlay.classList.remove("active");
+    drawer.classList.remove("active");
+  }
+}
+
+function updateDrawerInfo() {
+  if (!currentStudent) return;
+  document.getElementById("drawer-student-name").innerText = currentStudent.name;
+  document.getElementById("drawer-student-reg").innerText = currentStudent.reg_no;
+  
+  const avatarEl = document.getElementById("drawer-avatar");
+  if (avatarEl) {
+    const savedAvatar = localStorage.getItem("student_avatar");
+    if (savedAvatar) {
+      avatarEl.innerHTML = `<img src="${savedAvatar}" class="w-full h-full object-cover">`;
+    } else {
+      avatarEl.innerText = currentStudent.name.charAt(0).toUpperCase();
+    }
+  }
+}
+
+function showProfileScreen() {
+  if (!currentStudent) return;
+  
+  document.getElementById("profile-name").innerText = currentStudent.name || '-';
+  document.getElementById("profile-reg").innerText = currentStudent.reg_no || '-';
+  document.getElementById("profile-dept").innerText = currentStudent.department || '-';
+  document.getElementById("profile-dob").innerText = currentStudent.dob || '-';
+  
+  // Registered Mobile Number
+  const phoneEl = document.getElementById("profile-phone");
+  if (phoneEl) {
+    const rawPhone = currentStudent.phone_number || '';
+    phoneEl.innerHTML = rawPhone 
+      ? `<i data-lucide="phone" class="w-3.5 h-3.5 text-emerald-600"></i> <span>+91 ${rawPhone}</span>` 
+      : `<span class="text-slate-400 font-normal italic">Not provided</span>`;
+  }
+
+  // Email Address
+  const emailEl = document.getElementById("profile-email");
+  if (emailEl) {
+    emailEl.innerText = currentStudent.email ? currentStudent.email : "Not provided";
+    if (!currentStudent.email) {
+      emailEl.className = "text-sm text-slate-400 font-normal italic";
+    } else {
+      emailEl.className = "text-sm font-bold text-text-primary";
+    }
+  }
+  
+  const container = document.getElementById("profile-avatar-container");
+  if (container) {
+    const savedAvatar = localStorage.getItem("student_avatar");
+    if (savedAvatar) {
+      container.innerHTML = `<img src="${savedAvatar}" class="w-full h-full object-cover">`;
+    } else {
+      container.innerText = currentStudent.name ? currentStudent.name.charAt(0).toUpperCase() : 'U';
+    }
+  }
+  
+  router.navigateTo("profile-screen");
+  lucide.createIcons();
+}
+
+function handleAvatarUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const base64Img = e.target.result;
+    
+    localStorage.setItem("student_avatar", base64Img);
+    currentStudent.avatar = base64Img;
+    sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+    
+    const profileContainer = document.getElementById("profile-avatar-container");
+    if (profileContainer) {
+      profileContainer.innerHTML = `<img src="${base64Img}" class="w-full h-full object-cover">`;
+    }
+    
+    const drawerAvatar = document.getElementById("drawer-avatar");
+    if (drawerAvatar) {
+      drawerAvatar.innerHTML = `<img src="${base64Img}" class="w-full h-full object-cover">`;
+    }
+    
+    showToast("Profile picture uploaded successfully!", "success");
+  };
+  reader.readAsDataURL(file);
+}
+
+// 7. Student Auth System
+async function handleLoginSubmit(event) {
+  event.preventDefault();
+  const regNo = document.getElementById("login-reg-no").value.trim().toUpperCase();
+  const password = document.getElementById("login-password").value;
+
+  showLoading(true);
+  try {
+    const res = await fetch(`${API_BASE}/student/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reg_no: regNo, password: password })
+    });
+    const data = await res.json();
+    showLoading(false);
+    
+    if (!res.ok) {
+      showToast(data.error || "Login failed", "error");
+      return;
+    }
+    
+    currentStudent = data.student;
+    sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+    updateDrawerInfo();
+    setupRealtimeListener();
+    
+    showLoading(true);
+    await fetchStudentOrders();
+    showLoading(false);
+    
+    navigateHome();
+    showToast(`Welcome back, ${currentStudent.name}!`, "success");
+  } catch (err) {
+    showLoading(false);
+    console.error('Error logging in:', err);
+    showToast("Server connection error during login", "error");
+  }
+}
+
+async function handleRegisterSubmit(event) {
+  event.preventDefault();
+  const name = document.getElementById("reg-name").value.trim();
+  const regNo = document.getElementById("reg-no").value.trim().toUpperCase();
+  const phone = document.getElementById("reg-phone").value.trim().replace(/\D/g, '');
+  const email = document.getElementById("reg-email").value.trim();
+  const dept = document.getElementById("reg-dept").value.trim();
+  const dob = document.getElementById("reg-dob").value;
+  const password = document.getElementById("reg-password").value;
+
+  if (phone.length !== 10) {
+    showToast("Mobile number must be exactly 10 digits", "error");
+    return;
+  }
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showToast("Please enter a valid email address", "error");
+    return;
+  }
+
+  if (password.length < 6) {
+    showToast("Password must be at least 6 characters", "error");
+    return;
+  }
+
+  showLoading(true);
+  try {
+    const res = await fetch(`${API_BASE}/student/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reg_no: regNo,
+        name,
+        phone_number: phone,
+        email: email || null,
+        department: dept,
+        dob,
+        password
+      })
+    });
+    const data = await res.json();
+    showLoading(false);
+
+    if (!res.ok) {
+      showToast(data.error || "Registration failed", "error");
+      return;
+    }
+
+    currentStudent = data;
+    sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+    
+    updateDrawerInfo();
+    setupRealtimeListener();
+    
+    showLoading(true);
+    await fetchStudentOrders();
+    showLoading(false);
+    
+    navigateHome();
+    showToast("🎉 Account created successfully!", "success");
+  } catch (err) {
+    showLoading(false);
+    console.error('Error registering student:', err);
+    showToast("Registration connection error", "error");
+  }
+}
+
+function handleLogout() {
+  if (ordersSubscription) {
+    supabase.removeChannel(ordersSubscription);
+    ordersSubscription = null;
+  }
+  currentStudent = null;
+  cart = {};
+  sessionStorage.removeItem("session_student");
+  localStorage.removeItem("session_student");
+  localStorage.removeItem("isGuest");
+  localStorage.removeItem("guestStudent");
+  router.navigateTo("login-screen");
+  showToast("Logged out successfully", "success");
+}
+
+function toggleAuthTab(tab) {
+  const loginBtn = document.getElementById("tab-login-btn");
+  const regBtn = document.getElementById("tab-register-btn");
+  const loginForm = document.getElementById("form-login");
+  const regForm = document.getElementById("form-register");
+
+  if (tab === "login") {
+    loginBtn.classList.add("active");
+    regBtn.classList.remove("active");
+    loginForm.classList.remove("hidden");
+    regForm.classList.add("hidden");
+  } else {
+    loginBtn.classList.remove("active");
+    regBtn.classList.add("active");
+    loginForm.classList.add("hidden");
+    regForm.classList.remove("hidden");
+  }
+}
+
+// Backward-compatibility switchAuthTab wrapper
+function switchAuthTab(tab) {
+  toggleAuthTab(tab);
+}
+
+// ----------------------------------------------------
+// 7b. Mobile Number-Only "Forgot Password" OTP Flow
+// ----------------------------------------------------
+let fpCurrentPhone = "";
+let fpCurrentOtp = "";
+let fpTimerInterval = null;
+let fpRemainingSeconds = 60;
+
+function openForgotPasswordModal(event) {
+  if (event) event.preventDefault();
+  fpCurrentPhone = "";
+  fpCurrentOtp = "";
+  if (fpTimerInterval) clearInterval(fpTimerInterval);
+  
+  // Clear inputs
+  const phoneInput = document.getElementById("fp-phone-input");
+  const otpInput = document.getElementById("fp-otp-input");
+  const newPwd = document.getElementById("fp-new-pwd");
+  const confirmPwd = document.getElementById("fp-confirm-pwd");
+  if (phoneInput) phoneInput.value = "";
+  if (otpInput) otpInput.value = "";
+  if (newPwd) newPwd.value = "";
+  if (confirmPwd) confirmPwd.value = "";
+  
+  goToFpStep(1);
+  const modal = document.getElementById("forgot-password-modal");
+  if (modal) modal.classList.remove("hidden");
+  lucide.createIcons();
+}
+
+function closeForgotPasswordModal() {
+  if (fpTimerInterval) clearInterval(fpTimerInterval);
+  const modal = document.getElementById("forgot-password-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function goToFpStep(step) {
+  [1, 2, 3, 4].forEach(s => {
+    const el = document.getElementById(`fp-step-${s}`);
+    if (el) {
+      if (s === step) el.classList.remove("hidden");
+      else el.classList.add("hidden");
+    }
+  });
+  lucide.createIcons();
+}
+
+function startFpResendTimer() {
+  if (fpTimerInterval) clearInterval(fpTimerInterval);
+  fpRemainingSeconds = 60;
+  const countdownEl = document.getElementById("fp-countdown");
+  const timerTextEl = document.getElementById("fp-timer-text");
+  const resendBtn = document.getElementById("fp-resend-btn");
+  
+  if (resendBtn) resendBtn.disabled = true;
+  if (timerTextEl) timerTextEl.classList.remove("hidden");
+  if (countdownEl) countdownEl.innerText = `${fpRemainingSeconds}s`;
+
+  fpTimerInterval = setInterval(() => {
+    fpRemainingSeconds--;
+    if (countdownEl) countdownEl.innerText = `${fpRemainingSeconds}s`;
+    
+    if (fpRemainingSeconds <= 0) {
+      clearInterval(fpTimerInterval);
+      if (resendBtn) resendBtn.disabled = false;
+      if (timerTextEl) timerTextEl.classList.add("hidden");
+    }
+  }, 1000);
+}
+
+// Step 1: Submit Mobile Number to request 6-digit OTP
+async function handleSendOtpSubmit(event) {
+  event.preventDefault();
+  const phone = document.getElementById("fp-phone-input").value.trim().replace(/\D/g, '');
+  if (phone.length !== 10) {
+    showToast("Please enter a valid 10-digit mobile number", "error");
+    return;
+  }
+
+  showLoading(true);
+  try {
+    const res = await fetch(`${API_BASE}/student/forgot-password/request-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_number: phone })
+    });
+    const data = await res.json();
+    showLoading(false);
+
+    if (!res.ok) {
+      showToast(data.error || "Failed to find student account", "error");
+      return;
+    }
+
+    fpCurrentPhone = phone;
+    fpCurrentOtp = data.test_otp || "";
+
+    // Update Step 2 UI
+    const displayPhone = document.getElementById("fp-display-phone");
+    if (displayPhone) displayPhone.innerText = `+91 ${phone.slice(0, 2)}******${phone.slice(8)}`;
+
+    const sandboxBanner = document.getElementById("fp-sandbox-otp-banner");
+    const sandboxCode = document.getElementById("fp-sandbox-otp-code");
+    if (data.test_otp && sandboxBanner && sandboxCode) {
+      sandboxCode.innerText = data.test_otp;
+      sandboxBanner.classList.remove("hidden");
+    } else if (sandboxBanner) {
+      sandboxBanner.classList.add("hidden");
+    }
+
+    goToFpStep(2);
+    startFpResendTimer();
+    showToast("🔑 6-Digit OTP sent successfully!", "success");
+  } catch (e) {
+    showLoading(false);
+    console.error("OTP request error:", e);
+    showToast("Connection error while requesting OTP", "error");
+  }
+}
+
+// Resend OTP handler
+async function handleResendOtp() {
+  if (!fpCurrentPhone) return;
+  showLoading(true);
+  try {
+    const res = await fetch(`${API_BASE}/student/forgot-password/request-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_number: fpCurrentPhone })
+    });
+    const data = await res.json();
+    showLoading(false);
+
+    if (!res.ok) {
+      showToast(data.error || "Failed to resend OTP", "error");
+      return;
+    }
+
+    fpCurrentOtp = data.test_otp || "";
+    const sandboxCode = document.getElementById("fp-sandbox-otp-code");
+    if (data.test_otp && sandboxCode) sandboxCode.innerText = data.test_otp;
+
+    startFpResendTimer();
+    showToast("🔄 New 6-Digit OTP sent!", "success");
+  } catch (e) {
+    showLoading(false);
+    showToast("Error resending OTP", "error");
+  }
+}
+
+// Step 2: Verify OTP
+async function handleVerifyOtpSubmit(event) {
+  event.preventDefault();
+  const otp = document.getElementById("fp-otp-input").value.trim();
+  if (otp.length !== 6) {
+    showToast("Please enter the 6-digit OTP", "error");
+    return;
+  }
+
+  showLoading(true);
+  try {
+    const res = await fetch(`${API_BASE}/student/forgot-password/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_number: fpCurrentPhone, otp: otp })
+    });
+    const data = await res.json();
+    showLoading(false);
+
+    if (!res.ok) {
+      showToast(data.error || "Invalid OTP code", "error");
+      return;
+    }
+
+    fpCurrentOtp = otp;
+    if (fpTimerInterval) clearInterval(fpTimerInterval);
+    goToFpStep(3);
+    showToast("✅ OTP Verified! Enter your new password.", "success");
+  } catch (e) {
+    showLoading(false);
+    showToast("Error verifying OTP", "error");
+  }
+}
+
+// Step 3: Submit New Password
+async function handleResetPasswordSubmit(event) {
+  event.preventDefault();
+  const newPwd = document.getElementById("fp-new-pwd").value;
+  const confirmPwd = document.getElementById("fp-confirm-pwd").value;
+
+  if (newPwd.length < 6) {
+    showToast("New password must be at least 6 characters", "error");
+    return;
+  }
+
+  if (newPwd !== confirmPwd) {
+    showToast("Passwords do not match!", "error");
+    return;
+  }
+
+  showLoading(true);
+  try {
+    const res = await fetch(`${API_BASE}/student/forgot-password/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone_number: fpCurrentPhone,
+        otp: fpCurrentOtp,
+        new_password: newPwd
+      })
+    });
+    const data = await res.json();
+    showLoading(false);
+
+    if (!res.ok) {
+      showToast(data.error || "Failed to reset password", "error");
+      return;
+    }
+
+    goToFpStep(4);
+    showToast("🎉 Password reset successfully!", "success");
+
+    // Auto-redirect to login after 2 seconds
+    setTimeout(() => {
+      closeForgotPasswordModal();
+      switchAuthTab('login');
+    }, 2200);
+  } catch (e) {
+    showLoading(false);
+    console.error("Reset password error:", e);
+    showToast("Error resetting password", "error");
+  }
+}
+
+function togglePasswordVisibility(inputId, toggleEl) {
+  const input = document.getElementById(inputId);
+  const icon = toggleEl.querySelector('i');
+  if (input.type === "password") {
+    input.type = "text";
+    icon.setAttribute("data-lucide", "eye-off");
+  } else {
+    input.type = "password";
+    icon.setAttribute("data-lucide", "eye");
+  }
+  lucide.createIcons();
+}
+
+// 8. Search & Product Listing System
+function handleHomeSearch(val) {
+  searchProducts(val);
+}
+
+function searchProducts(val) {
+  const query = val.trim().toLowerCase();
+  const searchWrapper = document.getElementById("search-results-wrapper");
+  const mainContent = document.getElementById("home-main-content");
+  const resultsList = document.getElementById("search-results-list");
+
+  if (!query) {
+    if (searchWrapper) searchWrapper.classList.add("hidden");
+    if (mainContent) mainContent.classList.remove("hidden");
+    return;
+  }
+
+  if (searchWrapper) searchWrapper.classList.remove("hidden");
+  if (mainContent) mainContent.classList.add("hidden");
+
+  const matched = products.filter(p => p.name.toLowerCase().includes(query) || p.barcode_id.toLowerCase().includes(query));
+
+  if (matched.length === 0) {
+    if (resultsList) resultsList.innerHTML = `<div class="text-center py-8 text-xs text-text-secondary">No matching products found.</div>`;
+    return;
+  }
+
+  if (resultsList) {
+    resultsList.innerHTML = matched.map(item => {
+      const qty = cart[item.id] || 0;
+      const isOutOfStock = item.stock_quantity === 0;
+      const isLowStock = item.stock_quantity > 0 && item.stock_quantity <= 5;
+      
+      let stockBadgeHTML = '';
+      let quantitySelectorHTML = '';
+
+      if (isOutOfStock) {
+        stockBadgeHTML = `<span class="badge-out-of-stock">Out of Stock</span>`;
+        quantitySelectorHTML = `<span class="text-xs text-secondary font-bold font-poppins">Out of Stock</span>`;
+      } else {
+        if (isLowStock) stockBadgeHTML = `<span class="badge-low-stock">⚠️ Only a few left!</span>`;
+        
+        if (qty === 0) {
+          quantitySelectorHTML = `<button onclick="updateCartQty('${item.id}', 1)" class="btn-primary py-1 px-4 text-xs font-semibold rounded-lg" ${!isCanteenOpen ? 'disabled' : ''}>Add</button>`;
+        } else {
+          quantitySelectorHTML = `
+            <div class="flex items-center gap-2">
+              <button onclick="updateCartQty('${item.id}', ${qty - 1})" class="qty-btn bg-slate-100 hover:bg-slate-200 text-text-primary">-</button>
+              <span class="font-bold text-sm text-text-primary w-4 text-center">${qty}</span>
+              <button onclick="updateCartQty('${item.id}', ${qty + 1})" class="qty-btn bg-primary text-white hover:bg-primary-dark" ${qty >= item.stock_quantity || !isCanteenOpen ? 'disabled' : ''}>+</button>
+            </div>
+          `;
+        }
+      }
+
+      return `
+        <div class="card-premium p-4 flex gap-4 relative items-center ${isOutOfStock ? 'opacity-70' : ''}">
+          <div class="w-20 h-20 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0">
+            <img src="${item.image_url}" alt="${item.name}" class="w-full h-full object-cover">
+          </div>
+          <div class="flex-1 flex flex-col justify-between h-20 py-0.5 min-w-0">
+            <div>
+              <h4 class="font-bold text-xs truncate text-text-primary">${item.name}</h4>
+              <p class="text-xs text-text-secondary mt-1">₹${item.price.toFixed(2)}</p>
+            </div>
+            <div class="flex items-center justify-between mt-1">
+              <div class="min-h-[22px]">${stockBadgeHTML}</div>
+              <div>${quantitySelectorHTML}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+}
+
+function clearSearch() {
+  const input = document.getElementById("home-search-input");
+  if (input) input.value = "";
+  searchProducts("");
+}
+
+function startVoiceSearch() {
+  showToast("Voice search activated...", "success");
+}
+
+function renderFrequentlyBought() {
+  const container = document.getElementById("frequent-list");
+  if (!container) return;
+  const topItems = products.filter(p => p.stock_quantity > 0).slice(0, 3);
+  
+  container.innerHTML = topItems.map(item => `
+    <div class="snap-start flex-shrink-0 w-36 bg-white card-premium p-3 flex flex-col justify-between" onclick="addQuickItem('${item.id}')">
+      <div class="relative w-full h-20 rounded-xl overflow-hidden mb-2 bg-slate-100">
+        <img src="${item.image_url}" alt="${item.name}" class="w-full h-full object-cover">
+      </div>
+      <div>
+        <h4 class="font-bold text-xs truncate text-text-primary mb-1">${item.name}</h4>
+        <div class="flex justify-between items-center mt-1">
+          <span class="text-xs font-extrabold text-primary-dark">₹${item.price.toFixed(0)}</span>
+          <button class="bg-primary/10 text-primary-dark w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs hover:bg-primary hover:text-white transition-colors">
+            +
+          </button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function addQuickItem(prodId) {
+  if (!isCanteenOpen) {
+    showToast("Canteen is closed. Cannot add items.", "error");
+    return;
+  }
+  const prod = products.find(p => p.id === prodId);
+  if (!prod || prod.stock_quantity === 0) {
+    showToast("Item is out of stock", "error");
+    return;
+  }
+  cart[prodId] = (cart[prodId] || 0) + 1;
+  updateCartBadge();
+  showToast(`${prod.name} added to cart!`, "success");
+}
+
+function renderCategoriesGrid() {
+  const container = document.getElementById("categories-list");
+  if (!container) return;
+  if (categories.length === 0) {
+    container.innerHTML = `<div class="col-span-full text-center py-12 text-xs text-text-secondary">No categories available yet. Contact Canteen Manager.</div>`;
+    return;
+  }
+  container.innerHTML = categories.map(cat => `
+    <div class="card-premium p-4 flex flex-col items-center justify-center text-center cursor-pointer aspect-square hover:border-primary/30" onclick="navigateToCategory('${cat.id}')">
+      <span class="text-3xl mb-2">${cat.icon_url || cat.icon || '📦'}</span>
+      <span class="text-xs font-semibold text-text-primary leading-tight font-poppins">${cat.name}</span>
+    </div>
+  `).join('');
+}
+
+function navigateHome() {
+  try {
+    renderFrequentlyBought();
+  } catch (e) {
+    console.error("Error rendering frequently bought:", e);
+  }
+  try {
+    renderCategoriesGrid();
+  } catch (e) {
+    console.error("Error rendering categories grid:", e);
+  }
+  try {
+    updateCartBadge();
+  } catch (e) {
+    console.error("Error updating cart badge:", e);
+  }
+  navigateTo("home-screen");
+}
+
+function navigateToCategory(catId) {
+  try {
+    currentCategory = categories.find(c => c.id === catId);
+    if (!currentCategory) {
+      navigateTo("home-screen");
+      return;
+    }
+    
+    const catTitle = document.getElementById("category-title");
+    if (catTitle) catTitle.innerText = currentCategory.name;
+    
+    currentSort = "default";
+    const sortSelect = document.getElementById("sort-select");
+    if (sortSelect) sortSelect.value = "default";
+    
+    renderCategoryProducts();
+    updateCategoryFloatingBar();
+  } catch (e) {
+    console.error("Error navigating to category:", e);
+  }
+  navigateTo("category-screen");
+}
+
+function renderCategoryProducts() {
+  const container = document.getElementById("category-products-list");
+  if (!container) return;
+  let filtered = products.filter(p => p.category_id === currentCategory.id);
+  
+  if (currentSort === "price-asc") {
+    filtered.sort((a, b) => a.price - b.price);
+  } else if (currentSort === "price-desc") {
+    filtered.sort((a, b) => b.price - a.price);
+  } else if (currentSort === "popularity") {
+    filtered.sort((a, b) => b.stock_quantity - a.stock_quantity);
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="text-center py-12 text-xs text-text-secondary">No items listed in this category yet.</div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(item => {
+    const qty = cart[item.id] || 0;
+    const isOutOfStock = item.stock_quantity === 0;
+    const isLowStock = item.stock_quantity > 0 && item.stock_quantity <= 5;
+    
+    let stockBadgeHTML = '';
+    let quantitySelectorHTML = '';
+
+    if (isOutOfStock) {
+      stockBadgeHTML = `<span class="badge-out-of-stock">Out of Stock</span>`;
+      quantitySelectorHTML = `<span class="text-xs text-secondary font-bold font-poppins">Out of Stock</span>`;
+    } else {
+      if (isLowStock) stockBadgeHTML = `<span class="badge-low-stock">⚠️ Only a few left!</span>`;
+      
+      if (qty === 0) {
+        quantitySelectorHTML = `<button onclick="updateCartQty('${item.id}', 1)" class="btn-primary py-1 px-4 text-xs font-semibold rounded-lg" ${!isCanteenOpen ? 'disabled' : ''}>Add</button>`;
+      } else {
+        quantitySelectorHTML = `
+          <div class="flex items-center gap-2">
+            <button onclick="updateCartQty('${item.id}', ${qty - 1})" class="qty-btn bg-slate-100 hover:bg-slate-200 text-text-primary">-</button>
+            <span class="font-bold text-sm text-text-primary w-4 text-center">${qty}</span>
+            <button onclick="updateCartQty('${item.id}', ${qty + 1})" class="qty-btn bg-primary text-white hover:bg-primary-dark" ${qty >= item.stock_quantity || !isCanteenOpen ? 'disabled' : ''}>+</button>
+          </div>
+        `;
+      }
+    }
+
+    return `
+      <div class="card-premium p-4 flex gap-4 relative items-center ${isOutOfStock ? 'opacity-70' : ''}">
+        <div class="w-20 h-20 rounded-xl overflow-hidden bg-slate-100 flex-shrink-0">
+          <img src="${item.image_url}" alt="${item.name}" class="w-full h-full object-cover">
+        </div>
+        <div class="flex-1 flex flex-col justify-between h-20 py-0.5 min-w-0">
+          <div>
+            <h4 class="font-bold text-xs truncate text-text-primary">${item.name}</h4>
+            <p class="text-xs text-text-secondary mt-1">₹${item.price.toFixed(2)}</p>
+          </div>
+          <div class="flex items-center justify-between mt-1">
+            <div class="min-h-[22px]">${stockBadgeHTML}</div>
+            <div>${quantitySelectorHTML}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function handleSortChange(val) {
+  currentSort = val;
+  renderCategoryProducts();
+}
+
+function updateCartQty(prodId, newQty) {
+  if (!isCanteenOpen && newQty > (cart[prodId] || 0)) {
+    showToast("Canteen is closed. Cannot add items.", "error");
+    return;
+  }
+  const prod = products.find(p => p.id === prodId);
+  if (!prod) return;
+
+  if (newQty > prod.stock_quantity) {
+    showToast(`Only ${prod.stock_quantity} items available in stock.`, "error");
+    return;
+  }
+
+  if (newQty <= 0) {
+    delete cart[prodId];
+  } else {
+    cart[prodId] = newQty;
+  }
+
+  if (currentCategory) renderCategoryProducts();
+  
+  const searchInput = document.getElementById("home-search-input");
+  if (searchInput && searchInput.value.trim()) {
+    searchProducts(searchInput.value);
+  }
+
+  if (document.getElementById("cart-screen").classList.contains("active")) {
+    renderCartScreen();
+  }
+
+  updateCategoryFloatingBar();
+  updateCartBadge();
+}
+
+
+function updateCategoryFloatingBar() {
+  const floatingBar = document.getElementById("category-floating-bar");
+  if (!floatingBar) return;
+  
+  let totalCount = 0;
+  let totalPrice = 0.00;
+  
+  Object.keys(cart).forEach(id => {
+    const prod = products.find(p => p.id === id);
+    if (prod) {
+      totalCount += cart[id];
+      totalPrice += prod.price * cart[id];
+    }
+  });
+
+  if (totalCount > 0) {
+    floatingBar.classList.remove("hidden");
+    document.getElementById("floating-cart-count").innerText = totalCount;
+    document.getElementById("floating-cart-total").innerText = totalPrice.toFixed(2);
+  } else {
+    floatingBar.classList.add("hidden");
+  }
+}
+
+function updateCartBadge() {
+  const badge = document.getElementById("cart-badge");
+  if (!badge) return;
+  let totalCount = 0;
+  Object.keys(cart).forEach(id => {
+    totalCount += cart[id];
+  });
+
+  if (totalCount > 0) {
+    badge.innerText = totalCount;
+    badge.classList.remove("scale-0");
+    badge.classList.add("scale-100");
+  } else {
+    badge.classList.remove("scale-100");
+    badge.classList.add("scale-0");
+  }
+}
+
+// 9. Cart Screen, History & UPI Verification
+function navigateToCart() {
+  pendingOrderToken = "";
+  switchCartTab("current");
+  showScreen("cart-screen");
+}
+
+
+function goBackFromCart() {
+  if (currentCategory) {
+    navigateToCategory(currentCategory.id);
+  } else {
+    navigateHome();
+  }
+}
+
+async function switchCartTab(tab) {
+  const currentTabBtn = document.getElementById("cart-tab-current");
+  const historyTabBtn = document.getElementById("cart-tab-history");
+  const currentView = document.getElementById("cart-current-view");
+  const historyView = document.getElementById("cart-history-view");
+
+  if (!currentTabBtn || !historyTabBtn || !currentView || !historyView) return;
+
+  if (tab === "current") {
+    currentTabBtn.classList.add("border-primary", "text-primary");
+    currentTabBtn.classList.remove("border-transparent", "text-text-secondary");
+    historyTabBtn.classList.remove("border-primary", "text-primary");
+    historyTabBtn.classList.add("border-transparent", "text-text-secondary");
+    currentView.classList.remove("hidden");
+    historyView.classList.add("hidden");
+    renderCartScreen();
+  } else {
+    historyTabBtn.classList.add("border-primary", "text-primary");
+    historyTabBtn.classList.remove("border-transparent", "text-text-secondary");
+    currentTabBtn.classList.remove("border-primary", "text-primary");
+    currentTabBtn.classList.add("border-transparent", "text-text-secondary");
+    
+    showLoading(true);
+    await fetchStudentOrders();
+    showLoading(false);
+    
+    historyView.classList.remove("hidden");
+    currentView.classList.add("hidden");
+    renderCartHistoryView();
+  }
+}
+
+function renderCartScreen() {
+  const itemsContainer = document.getElementById("cart-items-list");
+  let totalAmount = 0;
+  let itemsCount = 0;
+  const cartItemKeys = Object.keys(cart);
+
+  if (cartItemKeys.length === 0) {
+    if (itemsContainer) {
+      itemsContainer.innerHTML = `
+        <div class="text-center py-16">
+          <i data-lucide="shopping-cart" class="w-12 h-12 text-slate-300 mx-auto mb-3"></i>
+          <p class="text-xs text-text-secondary">Your basket is empty.</p>
+          <button class="btn-primary mt-6 mx-auto px-6 py-2 text-xs" onclick="navigateHome()">Shop Now</button>
+        </div>
+      `;
+    }
+    document.getElementById("place-order-btn").disabled = true;
+    document.getElementById("cart-subtotal").innerText = "₹0.00";
+    document.getElementById("cart-total-amount").innerText = "₹0.00";
+    return;
+  }
+
+  document.getElementById("place-order-btn").disabled = false;
+  
+  if (itemsContainer) {
+    itemsContainer.innerHTML = cartItemKeys.map(prodId => {
+      const item = products.find(p => p.id === prodId);
+      const qty = cart[prodId];
+      const sub = item.price * qty;
+      totalAmount += sub;
+      itemsCount += qty;
+
+      return `
+        <div class="card-premium p-4 flex gap-4 items-center">
+          <img src="${item.image_url}" alt="${item.name}" class="w-14 h-14 rounded-lg object-cover flex-shrink-0">
+          <div class="flex-1 min-w-0">
+            <h4 class="font-bold text-xs truncate text-text-primary">${item.name}</h4>
+            <p class="text-xs text-text-secondary mt-1">₹${item.price.toFixed(2)}</p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button onclick="updateCartQty('${item.id}', ${qty - 1})" class="qty-btn bg-slate-100 hover:bg-slate-200 text-text-primary w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold">-</button>
+            <span class="font-bold text-xs text-text-primary w-4 text-center">${qty}</span>
+            <button onclick="updateCartQty('${item.id}', ${qty + 1})" class="qty-btn bg-primary text-white hover:bg-primary-dark w-6 h-6 flex items-center justify-center rounded-full text-xs font-bold" ${qty >= item.stock_quantity || !isCanteenOpen ? 'disabled' : ''}>+</button>
+          </div>
+          <div class="text-right ml-2 min-w-[60px] flex-shrink-0">
+            <p class="font-bold text-xs text-primary-dark">₹${sub.toFixed(2)}</p>
+            <button onclick="removeCartItem('${item.id}')" class="text-secondary hover:text-red-700 text-[10px] font-semibold mt-1">Remove</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  document.getElementById("cart-subtotal").innerText = `₹${totalAmount.toFixed(2)}`;
+  document.getElementById("cart-total-amount").innerText = `₹${totalAmount.toFixed(2)}`;
+  
+  if (!pendingOrderToken) {
+    const tokenSeq = Math.floor(Math.random() * 900) + 100;
+    pendingOrderToken = `#TK-${tokenSeq}`;
+  }
+
+  togglePaymentSelection(currentPaymentMode);
+}
+
+function removeCartItem(prodId) {
+  delete cart[prodId];
+  renderCartScreen();
+  updateCartBadge();
+  updateCategoryFloatingBar();
+}
+
+function startCashCountdown() {
+  if (cashCountdownInterval) clearInterval(cashCountdownInterval);
+  let timeRemaining = 30 * 60; // 30 minutes
+  
+  function updateTimerText() {
+    const minutes = Math.floor(timeRemaining / 60);
+    const seconds = timeRemaining % 60;
+    const formattedTime = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    const el = document.getElementById("cash-timer-countdown");
+    if (el) el.innerText = formattedTime;
+  }
+  
+  updateTimerText();
+  cashCountdownInterval = setInterval(() => {
+    timeRemaining--;
+    if (timeRemaining <= 0) {
+      clearInterval(cashCountdownInterval);
+      timeRemaining = 0;
+    }
+    updateTimerText();
+  }, 1000);
+}
+
+function togglePaymentSelection(mode) {
+  currentPaymentMode = mode === "UPI" ? "UPI" : "CASH";
+  const cashCard = document.getElementById("payment-cash-card");
+  const upiCard = document.getElementById("payment-upi-card");
+  const cashInd = document.getElementById("cash-indicator");
+  const upiInd = document.getElementById("upi-indicator");
+  const bannerIcon = document.getElementById("payment-banner-icon");
+  const bannerTitle = document.getElementById("payment-banner-title");
+  const bannerDesc = document.getElementById("payment-banner-desc");
+  const placeOrderBtn = document.getElementById("place-order-btn");
+
+  let grandTotal = 0;
+  Object.keys(cart).forEach(id => {
+    const prod = products.find(p => p.id === id);
+    if (prod) grandTotal += prod.price * cart[id];
+  });
+
+  if (currentPaymentMode === "CASH") {
+    if (cashCard) cashCard.className = "card-premium p-4 flex flex-col justify-between cursor-pointer border-2 border-emerald-500 bg-emerald-500/[0.04] relative transition-all";
+    if (upiCard) upiCard.className = "card-premium p-4 flex flex-col justify-between cursor-pointer border-2 border-slate-100 bg-white relative transition-all";
+    if (cashInd) cashInd.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20";
+    if (upiInd) upiInd.className = "w-2.5 h-2.5 rounded-full bg-slate-300 ring-0";
+    if (bannerIcon) bannerIcon.setAttribute("data-lucide", "banknote");
+    if (bannerTitle) bannerTitle.innerText = "Cash Payment at Counter";
+    if (bannerDesc) bannerDesc.innerText = `Please pay exact cash (₹${grandTotal.toFixed(2)}) at the canteen counter within 30 minutes of ordering to collect your items.`;
+    if (placeOrderBtn) {
+      placeOrderBtn.disabled = grandTotal <= 0 || !isCanteenOpen;
+      placeOrderBtn.className = "w-full btn-primary bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 px-6 rounded-xl flex items-center justify-center gap-2 shadow-lg transition-all";
+      placeOrderBtn.innerHTML = `<i data-lucide="banknote" class="w-5 h-5"></i> Place Order - Pay Cash at Counter (₹${grandTotal.toFixed(2)})`;
+    }
+    startCashCountdown();
+  } else {
+    // UPI Mode
+    if (cashCard) cashCard.className = "card-premium p-4 flex flex-col justify-between cursor-pointer border-2 border-slate-100 bg-white relative transition-all";
+    if (upiCard) upiCard.className = "card-premium p-4 flex flex-col justify-between cursor-pointer border-2 border-blue-500 bg-blue-500/[0.04] relative transition-all";
+    if (cashInd) cashInd.className = "w-2.5 h-2.5 rounded-full bg-slate-300 ring-0";
+    if (upiInd) upiInd.className = "w-2.5 h-2.5 rounded-full bg-blue-500 ring-4 ring-blue-500/20";
+    if (bannerIcon) bannerIcon.setAttribute("data-lucide", "smartphone");
+    if (bannerTitle) bannerTitle.innerText = "Scan UPI QR at Counter";
+    if (bannerDesc) bannerDesc.innerText = `Scan the canteen UPI QR code (₹${grandTotal.toFixed(2)}) using any UPI app (GPay, PhonePe, Paytm) upon order pickup.`;
+    if (placeOrderBtn) {
+      placeOrderBtn.disabled = grandTotal <= 0 || !isCanteenOpen;
+      placeOrderBtn.className = "w-full btn-primary bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 px-6 rounded-xl flex items-center justify-center gap-2 shadow-lg transition-all";
+      placeOrderBtn.innerHTML = `<i data-lucide="smartphone" class="w-5 h-5"></i> Place Order - Scan UPI at Counter (₹${grandTotal.toFixed(2)})`;
+    }
+    if (cashCountdownInterval) {
+      clearInterval(cashCountdownInterval);
+      cashCountdownInterval = null;
+    }
+  }
+  lucide.createIcons();
+}
+
+// ----------------------------------------------------
+// 10. STUDENT COUNTER CHECKOUT HANDLER
+// ----------------------------------------------------
+
+function handleCheckoutClick() {
+  if (!currentStudent) {
+    showToast("Please log in to proceed with checkout", "error");
+    showScreen("login-screen");
+    return;
+  }
+
+  if (!isCanteenOpen) {
+    showToast("Canteen is currently CLOSED. Orders cannot be placed.", "error");
+    return;
+  }
+
+  const cartKeys = Object.keys(cart);
+  if (cartKeys.length === 0) {
+    showToast("Your cart is empty!", "error");
+    return;
+  }
+
+  placeOrder();
+}
+
+function getCartPayload() {
+  let grandTotal = 0;
+  const orderItemsList = [];
+
+  for (let prodId of Object.keys(cart)) {
+    const prod = products.find(p => p.id === prodId);
+    if (prod && cart[prodId] > 0) {
+      grandTotal += prod.price * cart[prodId];
+      orderItemsList.push({
+        product_id: prodId,
+        quantity: cart[prodId],
+        unit_price: prod.price
+      });
+    }
+  }
+
+  return { grandTotal, orderItemsList };
+}
+
+async function openPaymentGatewayModal() {
+  const { grandTotal, orderItemsList } = getCartPayload();
+  if (orderItemsList.length === 0) {
+    showToast("Cart is empty", "error");
+    return;
+  }
+
+  showLoading(true);
+
+  try {
+    // 1. Request secure payment session initialization from backend
+    const res = await fetch(`${API_BASE}/payment/create-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        student_id: currentStudent.id,
+        items: orderItemsList,
+        total_amount: grandTotal
+      })
+    });
+
+    const data = await res.json();
+    showLoading(false);
+
+    if (!res.ok) {
+      showToast(data.error || "Failed to initialize payment gateway", "error");
+      return;
+    }
+
+    activePaymentSession = data;
+
+    // Update modal amounts and references
+    const modalAmountEl = document.getElementById("pg-modal-amount");
+    const intentBtnAmtEl = document.getElementById("pg-intent-btn-amount");
+    const qrAmtDisplay = document.getElementById("pg-qr-amount-display");
+    const txnRefEl = document.getElementById("pg-upi-txn-ref");
+
+    if (modalAmountEl) modalAmountEl.innerText = `₹${grandTotal.toFixed(2)}`;
+    if (intentBtnAmtEl) intentBtnAmtEl.innerText = `${grandTotal.toFixed(2)}`;
+    if (qrAmtDisplay) qrAmtDisplay.innerText = `${grandTotal.toFixed(2)}`;
+    if (txnRefEl) txnRefEl.innerText = data.txn_ref;
+
+    // Set intent link
+    const intentLink = document.getElementById("pg-upi-intent-link");
+    if (intentLink) intentLink.href = data.upi_intent_url;
+
+    // Unhide modal
+    const modal = document.getElementById("payment-gateway-modal");
+    if (modal) modal.classList.remove("hidden");
+
+    // Default to UPI App Tab (exclusively invalidates active QR session)
+    switchPaymentGatewayTab('upi_app');
+    lucide.createIcons();
+
+  } catch (err) {
+    showLoading(false);
+    console.error("Open payment gateway error:", err);
+    showToast("Could not connect to payment gateway", "error");
+  }
+}
+
+function closePaymentGatewayModal() {
+  stopDynamicQrTimers();
+
+  const modal = document.getElementById("payment-gateway-modal");
+  if (modal) modal.classList.add("hidden");
+
+  // Invalidate session on backend if pending
+  if (activePaymentSession && activePaymentSession.txn_ref) {
+    fetch(`${API_BASE}/payment/cancel-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txn_ref: activePaymentSession.txn_ref })
+    }).catch(() => {});
+  }
+
+  activePaymentSession = null;
+}
+
+function stopDynamicQrTimers() {
+  if (qrExpiryCountdownInterval) {
+    clearInterval(qrExpiryCountdownInterval);
+    qrExpiryCountdownInterval = null;
+  }
+  if (qrStatusPollInterval) {
+    clearInterval(qrStatusPollInterval);
+    qrStatusPollInterval = null;
+  }
+}
+
+function switchPaymentGatewayTab(tab) {
+  paymentGatewayTab = tab;
+
+  const btnUpiApp = document.getElementById("tab-btn-upi-app");
+  const btnDynamicQr = document.getElementById("tab-btn-dynamic-qr");
+  const contentUpiApp = document.getElementById("tab-content-upi-app");
+  const contentDynamicQr = document.getElementById("tab-content-dynamic-qr");
+
+  if (tab === "upi_app") {
+    // 1. Highlight Tab 1
+    if (btnUpiApp) btnUpiApp.className = "payment-tab-btn active py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all";
+    if (btnDynamicQr) btnDynamicQr.className = "payment-tab-btn py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all";
+    if (contentUpiApp) contentUpiApp.classList.remove("hidden");
+    if (contentDynamicQr) contentDynamicQr.classList.add("hidden");
+
+    // 2. STRICT SESSION EXCLUSIVITY: Stop any active QR timer & polling immediately
+    stopDynamicQrTimers();
+
+    // Clear dynamic QR canvas to ensure zero double-payment risk
+    const qrCanvas = document.getElementById("pg-dynamic-qr-canvas");
+    if (qrCanvas) {
+      const ctx = qrCanvas.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, qrCanvas.width, qrCanvas.height);
+    }
+  } else {
+    // 1. Highlight Tab 2
+    if (btnDynamicQr) btnDynamicQr.className = "payment-tab-btn active py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all";
+    if (btnUpiApp) btnUpiApp.className = "payment-tab-btn py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all";
+    if (contentDynamicQr) contentDynamicQr.classList.remove("hidden");
+    if (contentUpiApp) contentUpiApp.classList.add("hidden");
+
+    // 2. Render fresh Dynamic QR Code and start 3-minute Countdown with Auto-Expiry
+    renderDynamicQrAndStartCountdown();
+  }
+
+  lucide.createIcons();
+}
+
+function renderDynamicQrAndStartCountdown() {
+  if (!activePaymentSession || !activePaymentSession.upi_intent_url) return;
+
+  stopDynamicQrTimers();
+
+  // Hide expired overlay if previously shown
+  const expiredOverlay = document.getElementById("pg-qr-expired-overlay");
+  if (expiredOverlay) expiredOverlay.classList.add("hidden");
+
+  // Render QR Code to Canvas
+  const qrCanvas = document.getElementById("pg-dynamic-qr-canvas");
+  const qrImage = document.getElementById("pg-dynamic-qr-image");
+  const upiPayload = activePaymentSession.upi_intent_url;
+
+  if (qrCanvas && typeof QRCode !== 'undefined' && QRCode.toCanvas) {
+    QRCode.toCanvas(qrCanvas, upiPayload, {
+      width: 160,
+      margin: 1,
+      color: { dark: '#0F172A', light: '#FFFFFF' }
+    }, function (err) {
+      if (err && qrImage) {
+        qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upiPayload)}`;
+        qrImage.classList.remove("hidden");
+        qrCanvas.classList.add("hidden");
+      } else if (qrImage) {
+        qrImage.classList.add("hidden");
+        qrCanvas.classList.remove("hidden");
+      }
+    });
+  } else if (qrImage) {
+    qrImage.src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upiPayload)}`;
+    qrImage.classList.remove("hidden");
+    if (qrCanvas) qrCanvas.classList.add("hidden");
+  }
+
+  // 3-Minute (180s) Live Countdown
+  let remainingSeconds = DYNAMIC_QR_DURATION_SECONDS;
+  const countdownTextEl = document.getElementById("pg-qr-countdown-text");
+  const progressBarEl = document.getElementById("pg-qr-progress-bar");
+
+  function updateCountdownUI() {
+    const mins = Math.floor(remainingSeconds / 60);
+    const secs = remainingSeconds % 60;
+    const formatted = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    if (countdownTextEl) countdownTextEl.innerText = formatted;
+
+    const percent = Math.max(0, (remainingSeconds / DYNAMIC_QR_DURATION_SECONDS) * 100);
+    if (progressBarEl) progressBarEl.style.width = `${percent}%`;
+  }
+
+  updateCountdownUI();
+
+  qrExpiryCountdownInterval = setInterval(() => {
+    remainingSeconds--;
+    if (remainingSeconds <= 0) {
+      stopDynamicQrTimers();
+      remainingSeconds = 0;
+      updateCountdownUI();
+      // Show EXPIRED overlay
+      if (expiredOverlay) expiredOverlay.classList.remove("hidden");
+      showToast("Dynamic QR expired. Tap 'Refresh QR' to generate a new session.", "error");
+    } else {
+      updateCountdownUI();
+    }
+  }, 1000);
+
+  // Auto-poll status from backend every 2.5 seconds
+  qrStatusPollInterval = setInterval(async () => {
+    if (!activePaymentSession || !activePaymentSession.txn_ref) return;
+    try {
+      const res = await fetch(`${API_BASE}/payment/status/${activePaymentSession.txn_ref}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'PAID' && data.order) {
+          stopDynamicQrTimers();
+          processPaymentSuccess(data.order, activePaymentSession.txn_ref);
+        } else if (data.is_expired) {
+          stopDynamicQrTimers();
+          if (expiredOverlay) expiredOverlay.classList.remove("hidden");
+        }
+      }
+    } catch (e) {
+      console.warn("QR status poll error:", e);
+    }
+  }, 2500);
+}
+
+async function refreshDynamicQrSession() {
+  const { grandTotal, orderItemsList } = getCartPayload();
+  if (orderItemsList.length === 0) return;
+
+  showLoading(true);
+  try {
+    const res = await fetch(`${API_BASE}/payment/create-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        student_id: currentStudent.id,
+        items: orderItemsList,
+        total_amount: grandTotal
+      })
+    });
+
+    const data = await res.json();
+    showLoading(false);
+
+    if (res.ok) {
+      activePaymentSession = data;
+      const intentLink = document.getElementById("pg-upi-intent-link");
+      if (intentLink) intentLink.href = data.upi_intent_url;
+      const txnRefEl = document.getElementById("pg-upi-txn-ref");
+      if (txnRefEl) txnRefEl.innerText = data.txn_ref;
+
+      renderDynamicQrAndStartCountdown();
+      showToast("Fresh Dynamic QR generated! Valid for 3 minutes.", "success");
+    } else {
+      showToast(data.error || "Could not refresh payment session", "error");
+    }
+  } catch (err) {
+    showLoading(false);
+    console.error("Refresh QR error:", err);
+    showToast("Error refreshing QR session", "error");
+  }
+}
+
+function handleUpiIntentTrigger() {
+  showToast("Opening installed UPI App...", "success");
+  // Start background verification poller
+  if (!qrStatusPollInterval && activePaymentSession) {
+    qrStatusPollInterval = setInterval(async () => {
+      if (!activePaymentSession || !activePaymentSession.txn_ref) return;
+      try {
+        const res = await fetch(`${API_BASE}/payment/status/${activePaymentSession.txn_ref}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.status === 'PAID' && data.order) {
+            stopDynamicQrTimers();
+            processPaymentSuccess(data.order, activePaymentSession.txn_ref);
+          }
+        }
+      } catch (e) {}
+    }, 2500);
+  }
+}
+
+async function verifyUpiAppPayment() {
+  if (!activePaymentSession) {
+    showToast("No active payment session found.", "error");
+    return;
+  }
+
+  const { grandTotal, orderItemsList } = getCartPayload();
+  showLoading(true);
+
+  try {
+    const res = await fetch(`${API_BASE}/payment/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        txn_ref: activePaymentSession.txn_ref,
+        method: 'UPI_INTENT',
+        student_id: currentStudent.id,
+        items: orderItemsList,
+        total_amount: grandTotal
+      })
+    });
+
+    const data = await res.json();
+    showLoading(false);
+
+    if (res.ok && data.success && data.order) {
+      processPaymentSuccess(data.order, activePaymentSession.txn_ref);
+    } else {
+      showToast(data.error || "Payment verification pending. Please complete transaction in your UPI app.", "error");
+    }
+  } catch (err) {
+    showLoading(false);
+    console.error("Verify UPI app error:", err);
+    showToast("Error verifying UPI payment. Please try again.", "error");
+  }
+}
+
+async function verifyDynamicQrPayment() {
+  if (!activePaymentSession) {
+    showToast("No active QR payment session.", "error");
+    return;
+  }
+
+  const { grandTotal, orderItemsList } = getCartPayload();
+  showLoading(true);
+
+  try {
+    const res = await fetch(`${API_BASE}/payment/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        txn_ref: activePaymentSession.txn_ref,
+        method: 'DYNAMIC_QR',
+        student_id: currentStudent.id,
+        items: orderItemsList,
+        total_amount: grandTotal
+      })
+    });
+
+    const data = await res.json();
+    showLoading(false);
+
+    if (res.ok && data.success && data.order) {
+      processPaymentSuccess(data.order, activePaymentSession.txn_ref);
+    } else {
+      showToast(data.error || "Payment not yet confirmed by bank gateway. Please scan and complete UPI transfer.", "error");
+    }
+  } catch (err) {
+    showLoading(false);
+    console.error("Verify Dynamic QR error:", err);
+    showToast("Error verifying dynamic QR payment.", "error");
+  }
+}
+
+// Successful Verification Handler: Dismisses modal, clears cart, and renders Digital Token #TK-XXX
+function processPaymentSuccess(orderData, txnRef) {
+  stopDynamicQrTimers();
+
+  // Terminate checkout modal and expire QR view
+  const modal = document.getElementById("payment-gateway-modal");
+  if (modal) modal.classList.add("hidden");
+
+  // Invalidate and reset active payment session
+  activePaymentSession = null;
+
+  // Clear local cart
+  cart = {};
+  pendingOrderToken = "";
+  if (cashCountdownInterval) {
+    clearInterval(cashCountdownInterval);
+    cashCountdownInterval = null;
+  }
+  updateCartBadge();
+  updateCategoryFloatingBar();
+
+  // Sync products stock
+  fetchProducts();
+
+  showToast("🎉 Payment Verified! Official Token Issued.", "success");
+
+  // Refresh student order history and display official Confirmation Token Screen
+  fetchStudentOrders();
+  showConfirmationScreen(orderData);
+}
+
+// ----------------------------------------------------
+// 10b. Standard / Cash Order Placement
+// ----------------------------------------------------
+async function placeOrder() {
+  const { grandTotal, orderItemsList } = getCartPayload();
+  if (orderItemsList.length === 0) return;
+
+  showLoading(true);
+
+  try {
+    // Validate stock levels in backend before proceeding
+    const prodRes = await fetch(`${API_BASE}/products`);
+    const dbProducts = await prodRes.json();
+    if (!prodRes.ok) throw new Error("Stock validation failed");
+
+    for (let item of orderItemsList) {
+      const dbProd = dbProducts.find(p => p.id === item.product_id);
+      if (!dbProd || dbProd.stock_quantity < item.quantity) {
+        showLoading(false);
+        showToast(`Stock ran out for ${(dbProd ? dbProd.name : 'item')}! Order Cancelled.`, "error");
+        return;
+      }
+    }
+
+    const paymentMode = currentPaymentMode === 'UPI' ? 'UPI' : 'CASH';
+    const paymentMethod = paymentMode === 'UPI' ? 'ONLINE' : 'CASH_AT_COUNTER';
+
+    const isGuest = !currentStudent || currentStudent.isGuest || !currentStudent.id;
+    const orderType = isGuest ? 'GUEST_ORDER' : 'ONLINE_STUDENT';
+    const studentId = isGuest ? null : currentStudent.id;
+    const guestName = isGuest ? (currentStudent?.name || 'Guest User') : null;
+
+    // Submit Order with explicit payment_mode, order_type, and guest_name
+    const orderRes = await fetch(`${API_BASE}/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        student_id: studentId,
+        guest_name: guestName,
+        items: orderItemsList,
+        payment_method: paymentMethod,
+        payment_status: 'PENDING',
+        payment_mode: paymentMode,
+        order_type: orderType,
+        total_amount: grandTotal
+      })
+    });
+    const orderData = await orderRes.json();
+    showLoading(false);
+
+    if (!orderRes.ok) {
+      showToast(orderData.error || "Failed to place order", "error");
+      return;
+    }
+
+    // Clear cart states locally
+    cart = {};
+    pendingOrderToken = "";
+    if (cashCountdownInterval) {
+      clearInterval(cashCountdownInterval);
+      cashCountdownInterval = null;
+    }
+    updateCartBadge();
+    updateCategoryFloatingBar();
+
+    // Sync products state
+    await fetchProducts();
+
+    // Map order items for confirmation display
+    const formattedItems = orderItemsList.map(item => {
+      const dbProd = products.find(p => p.id === item.product_id);
+      return {
+        product_id: item.product_id,
+        name: dbProd ? dbProd.name : 'Unknown Product',
+        quantity: item.quantity,
+        unit_price: item.unit_price
+      };
+    });
+
+    const finalOrder = {
+      ...orderData,
+      total_amount: parseFloat(orderData.total_amount),
+      items: formattedItems
+    };
+
+    await fetchStudentOrders();
+    showConfirmationScreen(finalOrder);
+
+  } catch (e) {
+    showLoading(false);
+    showToast(e.message || "Failed to place order. Please try again.", "error");
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// showConfirmationScreen(orderData)
+// Called after a successful POST /api/orders AND from
+// viewHistoricalQR(). Switches to #qr-screen, populates
+// all dynamic fields, and generates the QR code.
+// ─────────────────────────────────────────────────────────
+function showConfirmationScreen(orderData) {
+  if (!orderData) return;
+
+  // Clear any existing QR countdown timer
+  if (qrCountdownInterval) {
+    clearInterval(qrCountdownInterval);
+    qrCountdownInterval = null;
+  }
+
+  const isCash = orderData.payment_method === 'CASH_AT_COUNTER';
+  const isPaid = orderData.payment_status === 'PAID' || orderData.payment_method === 'ONLINE';
+  const orderCreatedAt = orderData.created_at ? new Date(orderData.created_at).getTime() : Date.now();
+  const elapsedSeconds = Math.floor((Date.now() - orderCreatedAt) / 1000);
+  let remainingSeconds = CASH_EXPIRY_WINDOW_SECONDS - elapsedSeconds;
+
+  const isExpired = orderData.order_status === 'CANCELLED' || (!isPaid && isCash && remainingSeconds <= 0);
+
+  // ── 1. Header titles & Expired Alert / Countdown bar ─────
+  const titleEl = document.getElementById('confirm-screen-title');
+  const subtitleEl = document.getElementById('confirm-screen-subtitle');
+  const expiryAlert = document.getElementById('confirm-expiry-alert');
+  const timerBar = document.getElementById('confirm-cash-timer-bar');
+  const countdownEl = document.getElementById('confirm-cash-countdown');
+  const statusBadge = document.getElementById('confirm-status-badge');
+  const qrCaption = document.getElementById('confirm-qr-caption');
+
+  if (isExpired) {
+    if (titleEl) titleEl.innerText = "Order Expired";
+    if (subtitleEl) subtitleEl.innerText = "Cash payment window has closed";
+    if (expiryAlert) expiryAlert.classList.remove('hidden');
+    if (timerBar) timerBar.classList.add('hidden');
+    if (statusBadge) {
+      statusBadge.className = "inline-flex items-center gap-1 bg-red-50 text-red-700 text-[10px] font-bold px-2 py-0.5 rounded border border-red-200 mt-1";
+      statusBadge.innerText = "❌ Expired / Cancelled";
+    }
+    if (qrCaption) qrCaption.innerText = "Order Expired — Token Inactive";
+  } else if (isCash && !isPaid) {
+    if (titleEl) titleEl.innerText = "Order Placed Successfully!";
+    if (subtitleEl) subtitleEl.innerText = "Pay at counter within 30 minutes";
+    if (expiryAlert) expiryAlert.classList.add('hidden');
+    if (timerBar) timerBar.classList.remove('hidden');
+    if (statusBadge) {
+      statusBadge.className = "inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200 mt-1";
+      statusBadge.innerText = "⏳ Pending Cash Payment";
+    }
+    if (qrCaption) qrCaption.innerText = "Show token at counter to pay & receive";
+
+    // Start live countdown timer on confirmation screen
+    const updateCountdown = () => {
+      const nowElapsed = Math.floor((Date.now() - orderCreatedAt) / 1000);
+      const rem = Math.max(0, CASH_EXPIRY_WINDOW_SECONDS - nowElapsed);
+      const mins = Math.floor(rem / 60);
+      const secs = rem % 60;
+      if (countdownEl) {
+        countdownEl.innerText = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+      }
+
+      if (rem <= 0) {
+        if (qrCountdownInterval) {
+          clearInterval(qrCountdownInterval);
+          qrCountdownInterval = null;
+        }
+        showToast(`Order ${orderData.token_number || ''} has expired. Inventory restored.`, "error");
+        fetchStudentOrders();
+        showConfirmationScreen({ ...orderData, order_status: 'CANCELLED' });
+      }
+    };
+
+    updateCountdown();
+    qrCountdownInterval = setInterval(updateCountdown, 1000);
+  } else {
+    // Online Paid or Delivered
+    if (titleEl) titleEl.innerText = "Order Placed Successfully!";
+    if (subtitleEl) subtitleEl.innerText = "Ready for pickup at the canteen counter";
+    if (expiryAlert) expiryAlert.classList.add('hidden');
+    if (timerBar) timerBar.classList.add('hidden');
+    if (statusBadge) {
+      if (orderData.order_status === 'DELIVERED') {
+        statusBadge.className = "inline-flex items-center gap-1 bg-green-50 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded border border-green-200 mt-1";
+        statusBadge.innerText = "✅ Delivered";
+      } else {
+        statusBadge.className = "inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded border border-amber-200 mt-1";
+        statusBadge.innerText = "⏳ Pending Pickup";
+      }
+    }
+    if (qrCaption) qrCaption.innerText = "Verification QR Signature Verified";
+  }
+
+  // ── 2. Populate token number ────────────────────────────
+  const isGuest = (currentStudent && currentStudent.isGuest) || (orderData.qr_code_data && (orderData.qr_code_data.is_guest || orderData.qr_code_data.order_type === 'GUEST_ORDER')) || !orderData.student_id;
+  const tokenEl = document.getElementById('confirm-token-number');
+  if (tokenEl) {
+    let rawToken = orderData.token_number || '#TK-???';
+    if (isGuest) {
+      const numPart = rawToken.replace(/^[^\d]*/, '');
+      tokenEl.innerText = `#G-${numPart || rawToken.replace(/^#/, '')}`;
+    } else {
+      tokenEl.innerText = rawToken;
+    }
+  }
+
+  // ── 2b. Guest Mode Warning & Screenshot Actions ──────────
+  const guestWarningEl = document.getElementById('confirm-guest-warning');
+  const guestActionsEl = document.getElementById('confirm-guest-actions');
+  if (guestWarningEl) {
+    if (isGuest) guestWarningEl.classList.remove('hidden');
+    else guestWarningEl.classList.add('hidden');
+  }
+  if (guestActionsEl) {
+    if (isGuest) guestActionsEl.classList.remove('hidden');
+    else guestActionsEl.classList.add('hidden');
+  }
+
+  // ── 3. Payment badge ────────────────────────────────────
+  const paymentBadge = document.getElementById('confirm-payment-badge');
+  if (paymentBadge) {
+    paymentBadge.innerText = isPaid ? '✅ PAID (Online)' : '💵 Cash at Counter';
+    paymentBadge.className = isPaid
+      ? 'inline-flex items-center gap-1 bg-green-50 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded border border-green-200 mt-1'
+      : 'inline-flex items-center gap-1 bg-orange-50 text-orange-700 text-[10px] font-bold px-2 py-0.5 rounded border border-orange-200 mt-1';
+  }
+
+  // ── 4. Order items summary ──────────────────────────────
+  const itemsEl = document.getElementById('confirm-order-items');
+  if (itemsEl) {
+    const items = orderData.items || orderData.order_items || [];
+    if (items.length > 0) {
+      const totalAmt = parseFloat(orderData.total_amount || 0).toFixed(2);
+      itemsEl.innerHTML = items.map(i => {
+        const name = i.name || (i.products ? i.products.name : 'Item');
+        const qty  = i.quantity;
+        const price = parseFloat(i.unit_price || 0);
+        return `<div class="flex justify-between">
+          <span>${qty}× ${name}</span>
+          <span class="font-semibold">₹${(price * qty).toFixed(2)}</span>
+        </div>`;
+      }).join('') +
+      `<div class="flex justify-between border-t border-slate-200 pt-1 mt-1 font-bold text-text-primary">
+        <span>Total</span><span>₹${totalAmt}</span>
+      </div>`;
+    } else {
+      itemsEl.innerHTML = `<p class="text-xs text-text-secondary">Order summary loaded.</p>`;
+    }
+  }
+
+  // ── 5. Navigate to confirmation screen FIRST ────────────
+  showScreen('qr-screen');
+  lucide.createIcons();
+
+  // ── 6. Generate QR after browser layout pass ───────────
+  requestAnimationFrame(() => {
+    generateAndShowQR('qrcode-container', orderData, isExpired);
+  });
+}
+
+async function downloadOrPrintToken() {
+  const token = document.getElementById('confirm-token-number')?.innerText || 'Canteen Token';
+  const total = document.getElementById('confirm-order-summary')?.innerText || '';
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title: `Canteen Order Token: ${token}`,
+        text: `My Canteen Order Token: ${token}.\nPlease show this token at counter!\n${total}`
+      });
+      return;
+    } catch (e) {}
+  }
+  window.print();
+}
+
+// ─────────────────────────────────────────────────────────
+// generateAndShowQR(containerId, orderData, isExpired)
+// Clears the container and renders QR code or Expired block.
+// ─────────────────────────────────────────────────────────
+function generateAndShowQR(containerId, orderData, isExpired = false) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  container.innerHTML = '';
+
+  if (isExpired) {
+    container.innerHTML = `
+      <div class="flex flex-col items-center justify-center p-4 text-center h-full">
+        <div class="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center mb-2">
+          <i data-lucide="alert-octagon" class="w-6 h-6 text-red-600"></i>
+        </div>
+        <p class="text-xs font-bold text-red-700">Token Expired</p>
+        <p class="text-[10px] text-slate-500 mt-1 leading-tight">30-min cash window passed. Order cancelled.</p>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  // Build payload for scanner lookup
+  const payload = JSON.stringify({
+    order_id:     orderData.id     || '',
+    token_number: orderData.token_number || orderData.token || '',
+    total:        parseFloat(orderData.total_amount || 0).toFixed(2)
+  });
+
+  if (typeof QRCode !== 'undefined') {
+    new QRCode(container, {
+      text:          payload,
+      width:         210,
+      height:        210,
+      colorDark:     '#1E293B',
+      colorLight:    '#FFFFFF',
+      correctLevel:  QRCode.CorrectLevel.M
+    });
+  } else {
+    const img = document.createElement('img');
+    img.src = `https://api.qrserver.com/v1/create-qr-code/?size=210x210&data=${encodeURIComponent(payload)}`;
+    img.alt = 'Order QR Code';
+    img.className = 'w-full h-full object-contain rounded';
+    container.appendChild(img);
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// resetAndGoHome()
+// Wired to the "Back to Home" button on the QR screen.
+// Clears any leftover UPI/checkout state and returns home.
+// ─────────────────────────────────────────────────────────
+function resetAndGoHome() {
+  if (qrCountdownInterval) {
+    clearInterval(qrCountdownInterval);
+    qrCountdownInterval = null;
+  }
+
+  // Reset UPI checkbox and UTR field if they exist
+  const upiCheckbox = document.getElementById('upi-confirm-checkbox');
+  const utrInput    = document.getElementById('upi-utr-input');
+  if (upiCheckbox) upiCheckbox.checked = false;
+  if (utrInput)    utrInput.value = '';
+
+  // Reset place order button state
+  const placeBtn = document.getElementById('place-order-btn');
+  if (placeBtn) {
+    placeBtn.disabled = false;
+    placeBtn.innerHTML = `<i data-lucide="shield-check" class="w-5 h-5"></i> Confirm &amp; Place Order`;
+  }
+
+  // Navigate home
+  navigateHome();
+}
+
+// 10b. Order History View
+function renderCartHistoryView() {
+  const container = document.getElementById("cart-history-view");
+  if (!container) return;
+
+  const userOrders = orders.filter(o => o.student_id === currentStudent.id);
+
+  if (userOrders.length === 0) {
+    container.innerHTML = `
+      <div class="text-center py-20 text-xs text-text-secondary">
+        <i data-lucide="history" class="w-12 h-12 text-slate-300 mx-auto mb-3"></i>
+        <p class="mt-2 font-medium">No past orders found.</p>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  const now = Date.now();
+
+  container.innerHTML = userOrders.map(o => {
+    const isCash = o.payment_method === 'CASH_AT_COUNTER';
+    const isPaid = o.payment_status === 'PAID' || o.payment_method === 'ONLINE';
+    const orderCreatedAt = o.created_at ? new Date(o.created_at).getTime() : now;
+    const isPast30Min = (now - orderCreatedAt) > (CASH_EXPIRY_WINDOW_SECONDS * 1000);
+    const isOrderExpired = o.order_status === 'CANCELLED' || (!isPaid && isCash && isPast30Min);
+
+    let statusBadge = "";
+    if (isOrderExpired) {
+      statusBadge = `
+        <div class="flex items-center justify-between w-full mt-2 pt-2 border-t border-slate-100/50">
+          <span class="inline-flex items-center gap-1 bg-red-50 text-red-700 text-xs font-bold px-2.5 py-1 rounded-lg border border-red-200">
+            ❌ Expired (30m passed)
+          </span>
+          <button onclick="viewHistoricalQR('${o.id}')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-bold transition-all">
+            Details
+          </button>
+        </div>
+      `;
+    } else if (o.order_status === "PENDING_PICKUP" || o.order_status === "PENDING") {
+      const remMins = isCash && !isPaid ? Math.max(1, Math.ceil((CASH_EXPIRY_WINDOW_SECONDS * 1000 - (now - orderCreatedAt)) / 60000)) : null;
+      statusBadge = `
+        <div class="flex items-center justify-between w-full mt-2 pt-2 border-t border-slate-100/50">
+          <span class="inline-flex items-center gap-1 bg-amber-50 text-amber-700 text-xs font-bold px-2.5 py-1 rounded-lg border border-amber-200">
+            ⏳ Pending Pickup ${remMins ? `(${remMins}m left)` : ''}
+          </span>
+          <button onclick="viewHistoricalQR('${o.id}')" class="bg-primary/10 text-primary-dark hover:bg-primary hover:text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-all">
+            View QR
+          </button>
+        </div>
+      `;
+    } else if (o.order_status === "DELIVERED") {
+      statusBadge = `
+        <div class="mt-2 pt-2 border-t border-slate-100/50">
+          <span class="inline-flex items-center gap-1 bg-green-50 text-green-700 text-xs font-bold px-2.5 py-1 rounded-lg border border-green-200">
+            ✅ Delivered
+          </span>
+        </div>
+      `;
+    } else {
+      statusBadge = `
+        <div class="mt-2 pt-2 border-t border-slate-100/50">
+          <span class="inline-flex items-center gap-1 bg-red-50 text-red-700 text-xs font-bold px-2.5 py-1 rounded-lg border border-red-200">
+            ❌ Cancelled
+          </span>
+        </div>
+      `;
+    }
+
+    let paymentBadge = "";
+    if (isPaid) {
+      paymentBadge = `<span class="bg-green-50 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded border border-green-200">PAID (Online)</span>`;
+    } else if (isOrderExpired) {
+      paymentBadge = `<span class="bg-red-50 text-red-700 text-[10px] font-bold px-2 py-0.5 rounded border border-red-200">EXPIRED UNPAID</span>`;
+    } else {
+      paymentBadge = `<span class="bg-orange-50 text-orange-700 text-[10px] font-bold px-2 py-0.5 rounded border border-orange-200">UNPAID (Cash at Counter)</span>`;
+    }
+
+    const dateTimeStr = new Date(o.created_at).toLocaleString();
+    const itemsSummary = (o.items || []).map(i => `${i.quantity}x ${i.name}`).join(', ') || 'Canteen items';
+
+    return `
+      <div class="card-premium p-4 space-y-3 border border-slate-100">
+        <div class="flex justify-between items-start">
+          <div>
+            <span class="font-extrabold text-sm text-primary-dark">${o.token_number}</span>
+            <span class="text-[10px] text-text-secondary block mt-0.5">${dateTimeStr}</span>
+          </div>
+          <div class="text-right">
+            <span class="text-sm font-bold text-text-primary block">₹${o.total_amount.toFixed(2)}</span>
+            <div class="mt-1">${paymentBadge}</div>
+          </div>
+        </div>
+        
+        <div class="text-xs text-text-secondary leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100/50">
+          <span class="font-semibold text-text-primary">Items:</span> ${itemsSummary}
+        </div>
+
+        <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-100/60">
+          <div class="flex-1">
+            ${statusBadge}
+          </div>
+          <button onclick="reorderPastOrder('${o.id}')" class="flex-shrink-0 flex items-center gap-1.5 bg-primary/10 hover:bg-primary hover:text-white text-primary-dark border border-primary/20 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95" title="Order Again">
+            <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i> Re-order
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  lucide.createIcons();
+}
+
+// Direct Order History trigger from Navbar or Drawer
+async function showOrdersHistory() {
+  toggleDrawer(false);
+
+  // Guest Check
+  if (currentStudent && currentStudent.isGuest) {
+    showToast("Order history is not available in Guest Mode.", "info");
+    return;
+  }
+
+  // Check login
+  if (!currentStudent || !currentStudent.id) {
+    showToast("Please login to view your order history.", "info");
+    showScreen("login-screen");
+    return;
+  }
+
+  // Directly show Order History view bypassing active basket
+  showScreen("cart-screen");
+
+  const currentTabBtn = document.getElementById("cart-tab-current");
+  const historyTabBtn = document.getElementById("cart-tab-history");
+  const currentView = document.getElementById("cart-current-view");
+  const historyView = document.getElementById("cart-history-view");
+
+  if (currentTabBtn && historyTabBtn && currentView && historyView) {
+    historyTabBtn.classList.add("border-primary", "text-primary");
+    historyTabBtn.classList.remove("border-transparent", "text-text-secondary");
+    currentTabBtn.classList.remove("border-primary", "text-primary");
+    currentTabBtn.classList.add("border-transparent", "text-text-secondary");
+
+    currentView.classList.add("hidden");
+    historyView.classList.remove("hidden");
+  }
+
+  showLoading(true);
+  await fetchStudentOrders();
+  showLoading(false);
+
+  renderCartHistoryView();
+}
+
+// Smart Re-order with Live Stock Safety Validation
+async function reorderPastOrder(orderId) {
+  if (!orderId) return;
+
+  let order = orders.find(o => o.id === orderId);
+  if (!order) {
+    try {
+      const res = await fetch(`${API_BASE}/orders/${orderId}`);
+      if (res.ok) {
+        order = await res.json();
+      }
+    } catch (e) {
+      console.warn("Could not fetch order by id:", e);
+    }
+  }
+
+  if (!order) {
+    showToast("Order details not found.", "error");
+    return;
+  }
+
+  showLoading(true);
+  await fetchProducts(); // Fetch latest stock from Supabase / API
+  showLoading(false);
+
+  let orderItems = order.items;
+  if (!orderItems || orderItems.length === 0) {
+    if (order.order_items && order.order_items.length > 0) {
+      orderItems = order.order_items.map(oi => ({
+        product_id: oi.product_id,
+        name: oi.products ? oi.products.name : (oi.name || 'Item'),
+        quantity: oi.quantity,
+        unit_price: parseFloat(oi.unit_price)
+      }));
+    }
+  }
+
+  if (!orderItems || orderItems.length === 0) {
+    showToast("No items found in this past order.", "error");
+    return;
+  }
+
+  const addedItems = [];
+  const outOfStockItems = [];
+  const partialItems = [];
+
+  for (const item of orderItems) {
+    const prod = products.find(p => p.id === item.product_id || (p.name && item.name && p.name.toLowerCase() === item.name.toLowerCase()));
+    if (!prod || prod.stock_quantity <= 0) {
+      outOfStockItems.push(item.name || (prod ? prod.name : 'Item'));
+    } else {
+      const reqQty = item.quantity || 1;
+      const currentCartQty = cart[prod.id] || 0;
+      const availableToAdd = Math.max(0, prod.stock_quantity - currentCartQty);
+
+      if (availableToAdd <= 0) {
+        outOfStockItems.push(prod.name);
+      } else {
+        const qtyToAdd = Math.min(reqQty, availableToAdd);
+        cart[prod.id] = (cart[prod.id] || 0) + qtyToAdd;
+        if (qtyToAdd < reqQty) {
+          partialItems.push(`${prod.name} (${qtyToAdd} of ${reqQty} added)`);
+        } else {
+          addedItems.push(prod.name);
+        }
+      }
+    }
+  }
+
+  if (addedItems.length === 0 && partialItems.length === 0) {
+    const names = outOfStockItems.join(', ');
+    showToast(`Cannot re-order: ${names || 'Item'} is currently out of stock!`, "error");
+    return;
+  }
+
+  updateCartBadge();
+  navigateToCart();
+
+  if (outOfStockItems.length > 0 || partialItems.length > 0) {
+    const issues = [...outOfStockItems.map(n => `${n} is out of stock`), ...partialItems].join(', ');
+    showToast(`Added available items to cart. (${issues})`, "warning");
+  } else {
+    showToast("Items added to cart!", "success");
+  }
+}
+
+function viewHistoricalQR(orderId) {
+  const order = orders.find(o => o.id === orderId);
+  if (order) showConfirmationScreen(order);
+}
+
+// 10. Notices Announcement & Modal UI Sync
+function updateNoticesUI() {
+  const badge = document.getElementById("notice-badge");
+  const storedSeenCount = parseInt(localStorage.getItem("seen_notices_count") || "0");
+  const unseenCount = Math.max(0, notices.length - storedSeenCount);
+  
+  if (badge) {
+    if (unseenCount > 0) {
+      badge.innerText = unseenCount;
+      badge.classList.remove("hidden");
+    } else {
+      badge.classList.add("hidden");
+    }
+  }
+
+  const banner = document.getElementById("announcement-banner");
+  const titleEl = document.getElementById("announcement-title");
+  const msgEl = document.getElementById("announcement-message");
+  
+  const dismissedLatestId = localStorage.getItem("dismissed_notice_id");
+  if (notices.length > 0 && dismissedLatestId !== notices[0].id) {
+    const latest = notices[0];
+    if (titleEl) titleEl.innerText = latest.title;
+    if (msgEl) msgEl.innerText = latest.message;
+    if (banner) banner.classList.remove("hidden");
+  } else {
+    if (banner) banner.classList.add("hidden");
+  }
+}
+
+function dismissAnnouncement() {
+  if (notices.length > 0) {
+    localStorage.setItem("dismissed_notice_id", notices[0].id);
+  }
+  const banner = document.getElementById("announcement-banner");
+  if (banner) banner.classList.add("hidden");
+}
+
+async function fetchCanteenStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/canteen/status`);
+    const data = await res.json();
+    if (res.ok) {
+      isCanteenOpen = data.is_open;
+      updateCanteenStatusUI();
+    }
+  } catch (e) {
+    console.warn("Could not fetch canteen status", e);
+  }
+}
+
+function updateCanteenStatusUI() {
+  const badge = document.getElementById("canteen-status-badge");
+  const banner = document.getElementById("canteen-closed-banner");
+
+  if (isCanteenOpen) {
+    if (badge) {
+      badge.className = "badge-status";
+      badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></span> 🟢 Open Now`;
+    }
+    if (banner) banner.classList.add("hidden");
+  } else {
+    if (badge) {
+      badge.className = "badge-status bg-rose-500/10 text-rose-600 border border-rose-500/20";
+      badge.innerHTML = `<span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> 🔴 Closed`;
+    }
+    if (banner) banner.classList.remove("hidden");
+  }
+
+  // Disable / Enable [Add to Cart] and [Place Order] buttons
+  const placeBtn = document.getElementById("place-order-btn");
+  if (placeBtn) {
+    placeBtn.disabled = !isCanteenOpen;
+  }
+}
+
+async function showNoticesHistory() {
+  // Dismiss the unread badge immediately
+  const badge = document.getElementById('notice-badge');
+  if (badge) badge.classList.add('hidden');
+
+  // Navigate to notices screen first so content is visible
+  showScreen('notices-screen');
+
+  // Show a loading spinner while fetching
+  const container = document.getElementById('notices-history-list');
+  if (container) {
+    container.innerHTML = `
+      <div class="flex justify-center items-center py-20">
+        <div class="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    `;
+  }
+
+  // Always fetch fresh notices from the server
+  try {
+    const res = await fetch(`${API_BASE}/notices`);
+    if (res.ok) {
+      const data = await res.json();
+      notices = data || [];
+    }
+  } catch (err) {
+    console.warn('Could not refresh notices:', err);
+  }
+
+  // Mark all as seen and render
+  localStorage.setItem('seen_notices_count', notices.length);
+  renderNoticesHistory();
+}
+
+function renderNoticesHistory() {
+  const container = document.getElementById('notices-history-list');
+  if (!container) return;
+
+  if (notices.length === 0) {
+    container.innerHTML = `
+      <div class="text-center py-20 text-xs text-text-secondary space-y-3">
+        <i data-lucide="bell-off" class="w-12 h-12 text-slate-300 mx-auto"></i>
+        <p class="font-medium text-sm text-text-primary">No announcements yet.</p>
+        <p class="leading-relaxed max-w-[220px] mx-auto">All updates from the canteen manager will appear here.</p>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  container.innerHTML = notices.map(notice => {
+    const timeStr = new Date(notice.created_at).toLocaleString('en-IN', {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    });
+    return `
+      <div class="card-premium p-4 space-y-2 border border-slate-100">
+        <div class="flex justify-between items-start gap-2">
+          <h4 class="font-bold text-sm text-text-primary flex items-center gap-1.5">
+            📢 ${notice.title}
+          </h4>
+          <span class="text-[10px] text-text-secondary bg-slate-100 px-2 py-0.5 rounded-full font-medium whitespace-nowrap flex-shrink-0">
+            🕒 ${timeStr}
+          </span>
+        </div>
+        <p class="text-xs text-text-secondary leading-relaxed">📝 ${notice.message}</p>
+      </div>
+    `;
+  }).join('');
+  lucide.createIcons();
+}
+
+function openNoticesModal() {
+  showNoticesHistory();
+}
+
+function closeNoticesModal() {
+  const modal = document.getElementById("notices-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function renderNoticesList() {
+  renderNoticesHistory();
+}
+
+// 11. Initializer Bindings on DOM Content Load
+window.addEventListener("DOMContentLoaded", async () => {
+  showLoading(true);
+  await initDatabase();
+  showLoading(false);
+  
+  // Poll canteen status every 10 seconds
+  setInterval(fetchCanteenStatus, 10000);
+  
+  lucide.createIcons();
+});
+

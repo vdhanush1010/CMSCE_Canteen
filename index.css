@@ -1,0 +1,450 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
+
+:root {
+  --color-primary: #00D28A;
+  --color-primary-dark: #00A36C;
+  --color-secondary: #FF6B5B;
+  --color-warning: #FFA801;
+  --color-background: #F4FAF7;
+  --color-surface: #FFFFFF;
+  --color-text-primary: #1E293B;
+  --color-text-secondary: #64748B;
+  --font-family: 'Inter', 'Poppins', sans-serif;
+  --radius-card: 16px;
+  --shadow-subtle: 0px 4px 12px rgba(0, 0, 0, 0.05);
+  --shadow-premium: 0px 8px 24px rgba(0, 210, 138, 0.12);
+  --shadow-card-hover: 0px 12px 28px rgba(0, 0, 0, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-family);
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow-x: hidden;
+}
+
+/* Premium Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-primary);
+}
+
+/* App Container (Simulating Mobile Phone Screen) */
+#app-container {
+  width: 100%;
+  max-width: 480px;
+  height: 100vh;
+  max-height: 920px;
+  background-color: var(--color-background);
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: flex;
+  flex-direction: column;
+}
+
+@media (min-width: 480px) {
+  #app-container {
+    border-radius: 32px;
+    height: 92vh;
+    max-height: 880px;
+  }
+}
+
+/* Screen Transitions */
+.screen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  flex-direction: column;
+  background-color: var(--color-background);
+  z-index: 10;
+  animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.screen.active {
+  display: flex;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Reusable UI Utility Classes */
+.bg-primary { background-color: var(--color-primary); }
+.bg-primary-dark { background-color: var(--color-primary-dark); }
+.bg-secondary { background-color: var(--color-secondary); }
+.bg-warning { background-color: var(--color-warning); }
+.bg-surface { background-color: var(--color-surface); }
+.bg-background { background-color: var(--color-background); }
+
+.text-primary { color: var(--color-primary); }
+.text-primary-dark { color: var(--color-primary-dark); }
+.text-secondary { color: var(--color-secondary); }
+.text-warning { color: var(--color-warning); }
+.text-dark { color: var(--color-text-primary); }
+.text-slate { color: var(--color-text-secondary); }
+
+.font-poppins {
+  font-family: 'Poppins', sans-serif;
+}
+
+/* Cards & Containers */
+.card-premium {
+  background-color: var(--color-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-subtle);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.card-premium:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+  color: white;
+  font-weight: 600;
+  border-radius: 12px;
+  padding: 14px 20px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0px 4px 12px rgba(0, 210, 138, 0.25);
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-primary:active {
+  transform: scale(0.98);
+  box-shadow: 0px 2px 6px rgba(0, 210, 138, 0.2);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Badges */
+.badge-low-stock {
+  background-color: rgba(255, 168, 1, 0.15);
+  color: #D97706; /* Darker amber for contrast */
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 168, 1, 0.3);
+}
+
+.badge-out-of-stock {
+  background-color: rgba(255, 107, 91, 0.15);
+  color: var(--color-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 107, 91, 0.3);
+}
+
+.badge-status {
+  background-color: rgba(0, 210, 138, 0.15);
+  color: var(--color-primary-dark);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Navigation Drawer */
+#drawer-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(30, 41, 59, 0.4);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+#drawer {
+  position: absolute;
+  top: 0;
+  left: -280px;
+  width: 280px;
+  height: 100%;
+  background: var(--color-surface);
+  z-index: 101;
+  transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 10px 0 30px rgba(0, 0, 0, 0.15);
+}
+
+#drawer-overlay.active {
+  display: block;
+  opacity: 1;
+}
+
+#drawer.active {
+  left: 0;
+}
+
+/* Tab buttons for auth */
+.auth-tab {
+  cursor: pointer;
+  position: relative;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  transition: color 0.2s ease;
+}
+
+.auth-tab.active {
+  color: var(--color-primary-dark);
+}
+
+.auth-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 25%;
+  width: 50%;
+  height: 3px;
+  background-color: var(--color-primary);
+  border-radius: 2px;
+}
+
+/* Password Toggle Icon */
+.pwd-toggle {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  transition: color 0.2s ease;
+}
+.pwd-toggle:hover {
+  color: var(--color-text-primary);
+}
+
+/* Grid layout rules */
+.categories-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+/* Product list sorting & filtering */
+.filter-select {
+  border: 1px solid #E2E8F0;
+  background-color: white;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  outline: none;
+  cursor: pointer;
+}
+
+/* Circular Quantity Controls */
+.qty-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: bold;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+/* Floating bottom bar */
+.bottom-floating-bar {
+  background-color: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* Success Confirmation animation */
+.success-checkmark {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: rgba(0, 210, 138, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: pulse-success 2s infinite;
+}
+
+@keyframes pulse-success {
+  0% {
+    box-shadow: 0 0 0 0 rgba(0, 210, 138, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 15px rgba(0, 210, 138, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 210, 138, 0);
+  }
+}
+
+/* Toast System */
+#toast-container {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 90%;
+  pointer-events: none;
+}
+
+.toast {
+  background-color: #1E293B;
+  color: white;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: toastIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: auto;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.toast.toast-error {
+  border-left: 4px solid var(--color-secondary);
+}
+
+.toast.toast-success {
+  border-left: 4px solid var(--color-primary);
+}
+
+/* Modal Overlay & Transitions */
+.modal-overlay {
+  background-color: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+.payment-tab-btn {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.payment-tab-btn.active {
+  background: #FFFFFF;
+  color: #00A36C;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.payment-tab-btn:not(.active) {
+  color: #64748B;
+}
+.payment-tab-btn:not(.active):hover {
+  color: #1E293B;
+}
+
+/* Dynamic QR Countdown Animation */
+.countdown-progress-bar {
+  transition: width 1s linear;
+}
+
+@keyframes spin-slow {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 8s linear infinite;
+}
+
+/* App badge icons hover */
+.upi-app-badge {
+  transition: all 0.2s ease;
+}
+.upi-app-badge:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+}
+
+/* Student Canteen Logo */
+.student-canteen-logo {
+  height: 42px;
+  width: auto;
+  object-fit: contain;
+  vertical-align: middle;
+  background: transparent;
+}
+

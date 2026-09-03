@@ -1,0 +1,17 @@
+{
+  "name": "canteen-backend",
+  "version": "1.0.0",
+  "description": "Backend API server for Campus Canteen Ordering App",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.38.4",
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "@ljharb/tsconfig": "^0.3.2"
+  }
+}
