@@ -109,43 +109,36 @@ let notices = [];
 
 async function fetchCategories() {
   try {
-    const { data, error } = await supabase
-      .from('categories')
-      .select('*')
-      .order('name');
-    if (error) throw error;
-    categories = data || [];
+    const res = await fetch('/api/menu?type=categories');
+    const result = await res.json();
+    if (result.success) categories = result.data || [];
   } catch (err) {
-    console.warn('Could not load categories from Supabase:', err);
+    console.warn('Could not load categories from /api/menu:', err);
     categories = [];
   }
 }
 
 async function fetchProducts() {
   try {
-    const { data, error } = await supabase
-      .from('products')
-      .select('*')
-      .order('name');
-    if (error) throw error;
-    products = data || [];
+    const res = await fetch('/api/menu?type=products');
+    const result = await res.json();
+    if (result.success) products = result.data || [];
   } catch (err) {
-    console.warn('Could not load products from Supabase:', err);
+    console.warn('Could not load products from /api/menu:', err);
     products = [];
   }
 }
 
 async function fetchNotices() {
   try {
-    const { data, error } = await supabase
-      .from('notices')
-      .select('*')
-      .order('created_at', { ascending: false });
-    if (error) throw error;
-    notices = data || [];
-    updateNoticesUI();
+    const res = await fetch('/api/notices');
+    const result = await res.json();
+    if (result.success) {
+      notices = result.data || [];
+      updateNoticesUI();
+    }
   } catch (err) {
-    console.warn('Could not load notices from Supabase:', err);
+    console.warn('Could not load notices from /api/notices:', err);
     notices = [];
   }
 }
@@ -184,15 +177,13 @@ async function initDatabase() {
   if (storedStudent) {
     currentStudent = JSON.parse(storedStudent);
     try {
-      const { data, error } = await supabase
-        .from('students')
-        .select('*')
-        .eq('id', currentStudent.id)
-        .maybeSingle();
-      if (!error && data) {
-        const { password_hash, ...safeStudent } = data;
-        currentStudent = safeStudent;
-        sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+      if (currentStudent && currentStudent.id) {
+        const res = await fetch('/api/auth?id=' + encodeURIComponent(currentStudent.id));
+        const result = await res.json();
+        if (result.success && result.data) {
+          currentStudent = result.data;
+          sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+        }
       }
     } catch (err) {
       console.warn("Could not sync student profile with backend", err);
@@ -1670,88 +1661,29 @@ async function verifyUpiAppPayment() {
     const studentId = isGuest ? null : currentStudent.id;
     const guestName = isGuest ? (currentStudent?.name || 'Guest User') : null;
 
-    const { data: dbProducts } = await supabase.from('products').select('id, name, stock_quantity');
-    if (dbProducts) {
-      for (const item of orderItemsList) {
-        const prod = dbProducts.find(p => p.id === item.product_id);
-        if (!prod || prod.stock_quantity < item.quantity) {
-          showLoading(false);
-          showToast(`Insufficient stock for "${prod ? prod.name : 'item'}".`, "error");
-          return;
-        }
-      }
-    }
-
-    const { data: newOrder, error: orderErr } = await supabase
-      .from('orders')
-      .insert([{
+    const res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         student_id: studentId,
-        total_amount: grandTotal,
+        items: orderItemsList,
         payment_method: 'ONLINE',
         payment_status: 'PAID',
-        order_status: 'PENDING_PICKUP'
-      }])
-      .select()
-      .single();
-
-    if (orderErr) throw orderErr;
-
-    const tokenNum = newOrder.token_number || `#TK-${Math.floor(100 + Math.random() * 900)}`;
-
-    const qrData = {
-      order_id: newOrder.id,
-      token_number: tokenNum,
-      student_id: studentId,
-      is_guest: isGuest,
-      guest_name: guestName,
-      payment_mode: 'UPI',
-      payment_status: 'PAID',
-      status: 'PAID',
-      total_amount: grandTotal,
-      created_at: new Date().toISOString()
-    };
-
-    await supabase.from('orders').update({ token_number: tokenNum, qr_code_data: qrData }).eq('id', newOrder.id);
-
-    const itemsToInsert = orderItemsList.map(item => ({
-      order_id: newOrder.id,
-      product_id: item.product_id,
-      quantity: item.quantity,
-      unit_price: item.unit_price
-    }));
-
-    await supabase.from('order_items').insert(itemsToInsert);
-
-    for (const item of orderItemsList) {
-      const { data: pData } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).single();
-      if (pData) {
-        const updatedStock = Math.max(0, (pData.stock_quantity || 0) - item.quantity);
-        await supabase.from('products').update({ stock_quantity: updatedStock }).eq('id', item.product_id);
-      }
-    }
-
-    showLoading(false);
-
-    const formattedItems = orderItemsList.map(item => {
-      const dbProd = products.find(p => p.id === item.product_id);
-      return {
-        product_id: item.product_id,
-        name: dbProd ? dbProd.name : 'Unknown Product',
-        quantity: item.quantity,
-        unit_price: item.unit_price
-      };
+        is_guest: isGuest,
+        guest_name: guestName,
+        notes: activePaymentSession.txn_ref ? `TxnRef: ${activePaymentSession.txn_ref}` : null
+      })
     });
 
-    const finalOrder = {
-      ...newOrder,
-      token_number: tokenNum,
-      payment_method: 'ONLINE',
-      payment_status: 'PAID',
-      order_status: 'PENDING_PICKUP',
-      total_amount: grandTotal,
-      items: formattedItems
-    };
+    const result = await res.json();
+    showLoading(false);
 
+    if (!res.ok || !result.success) {
+      showToast(result.error || "Error processing payment. Please try again.", "error");
+      return;
+    }
+
+    const finalOrder = result.data;
     processPaymentSuccess(finalOrder);
   } catch (err) {
     showLoading(false);
@@ -1768,76 +1700,43 @@ async function placeOrder() {
   const { grandTotal, orderItemsList } = getCartPayload();
   if (orderItemsList.length === 0) return;
 
+  if (!isCanteenOpen) {
+    showToast("Canteen is currently closed. Cannot place new orders.", "error");
+    return;
+  }
+
   showLoading(true);
 
   try {
-    const { data: dbProducts, error: pErr } = await supabase.from('products').select('id, name, stock_quantity');
-    if (pErr) throw pErr;
-
-    for (let item of orderItemsList) {
-      const dbProd = (dbProducts || []).find(p => p.id === item.product_id);
-      if (!dbProd || dbProd.stock_quantity < item.quantity) {
-        showLoading(false);
-        showToast(`Stock ran out for ${(dbProd ? dbProd.name : 'item')}! Order Cancelled.`, "error");
-        return;
-      }
-    }
-
     const isGuest = !currentStudent || currentStudent.isGuest || !currentStudent.id;
     const studentId = isGuest ? null : currentStudent.id;
     const guestName = isGuest ? (currentStudent?.name || 'Guest User') : null;
     const paymentMode = currentPaymentMode === 'UPI' ? 'UPI' : 'CASH';
     const paymentMethod = paymentMode === 'UPI' ? 'ONLINE' : 'CASH_AT_COUNTER';
+    const paymentStatus = paymentMode === 'UPI' ? 'PAID' : 'PENDING';
 
-    const { data: newOrder, error: orderError } = await supabase
-      .from('orders')
-      .insert([{
+    const res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         student_id: studentId,
-        total_amount: grandTotal,
+        items: orderItemsList,
         payment_method: paymentMethod,
-        payment_status: 'PENDING',
-        order_status: 'PENDING_PICKUP'
-      }])
-      .select()
-      .single();
+        payment_status: paymentStatus,
+        is_guest: isGuest,
+        guest_name: guestName
+      })
+    });
 
-    if (orderError) throw orderError;
+    const result = await res.json();
+    showLoading(false);
 
-    const tokenNum = newOrder.token_number || `#TK-${Math.floor(100 + Math.random() * 900)}`;
-
-    const qrData = {
-      order_id: newOrder.id,
-      token_number: tokenNum,
-      student_id: studentId,
-      is_guest: isGuest,
-      guest_name: guestName,
-      payment_mode: paymentMode,
-      payment_status: 'PENDING',
-      status: 'PENDING',
-      total_amount: grandTotal,
-      created_at: new Date().toISOString()
-    };
-
-    await supabase.from('orders').update({ token_number: tokenNum, qr_code_data: qrData }).eq('id', newOrder.id);
-
-    const orderItems = orderItemsList.map(item => ({
-      order_id: newOrder.id,
-      product_id: item.product_id,
-      quantity: item.quantity,
-      unit_price: item.unit_price
-    }));
-
-    await supabase.from('order_items').insert(orderItems);
-
-    for (const item of orderItemsList) {
-      const { data: pData } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).single();
-      if (pData) {
-        const updatedStock = Math.max(0, (pData.stock_quantity || 0) - item.quantity);
-        await supabase.from('products').update({ stock_quantity: updatedStock }).eq('id', item.product_id);
-      }
+    if (!res.ok || !result.success) {
+      showToast(result.error || "Order failed. Please check stock and try again.", "error");
+      return;
     }
 
-    showLoading(false);
+    const finalOrder = result.data;
 
     cart = {};
     pendingOrderToken = "";
@@ -1848,35 +1747,15 @@ async function placeOrder() {
     updateCartBadge();
     updateCategoryFloatingBar();
 
-    await fetchProducts();
+    if (!isGuest) {
+      orders.unshift(finalOrder);
+    }
 
-    const formattedItems = orderItemsList.map(item => {
-      const dbProd = products.find(p => p.id === item.product_id);
-      return {
-        product_id: item.product_id,
-        name: dbProd ? dbProd.name : 'Unknown Product',
-        quantity: item.quantity,
-        unit_price: item.unit_price
-      };
-    });
-
-    const finalOrder = {
-      ...newOrder,
-      token_number: tokenNum,
-      payment_method: paymentMethod,
-      payment_status: 'PENDING',
-      order_status: 'PENDING_PICKUP',
-      total_amount: grandTotal,
-      items: formattedItems
-    };
-
-    await fetchStudentOrders();
-    showConfirmationScreen(finalOrder);
-
-  } catch (e) {
+    showOrderConfirmation(finalOrder);
+  } catch (err) {
     showLoading(false);
-    console.error("Order error:", e);
-    showToast(e.message || "Failed to place order. Please try again.", "error");
+    console.error("Place order error:", err);
+    showToast("Failed to place order. Please try again.", "error");
   }
 }
 
