@@ -981,15 +981,30 @@ app.post('/api/orders', async (req, res) => {
   try {
     // 1. Verify stock levels before inserting
     const { data: dbProducts, error: pErr } = await supabase.from('products').select('id, name, stock_quantity');
-    if (!pErr && dbProducts) {
+    if (!req.body.stock_pre_deducted && !pErr && dbProducts) {
       for (const item of items) {
         const prod = dbProducts.find(p => p.id === item.product_id);
         if (!prod || prod.stock_quantity < item.quantity) {
           return res.status(400).json({
-            error: `Insufficient stock for "${prod ? prod.name : 'item'}". Available: ${prod ? prod.stock_quantity : 0}.`
+            error: `${prod ? prod.name : 'Item'} is out of stock or quantity no longer available!`
           });
         }
       }
+    }
+
+    // Calculate Daily Reset Order Ticket Number (#TK-101 onwards)
+    let ticketNumber = req.body.token_number || req.body.ticket_number;
+    if (!ticketNumber) {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+
+      const { count } = await supabase
+        .from('orders')
+        .select('*', { count: 'exact', head: true })
+        .gte('created_at', startOfToday.toISOString());
+
+      const dailySeq = (count || 0) + 101;
+      ticketNumber = `#TK-${dailySeq}`;
     }
 
     // 2. Insert into orders table (student_id is null for guest and POS orders)
@@ -997,6 +1012,7 @@ app.post('/api/orders', async (req, res) => {
       .from('orders')
       .insert([{
         student_id: resolvedStudentId,
+        token_number: ticketNumber,
         total_amount: finalTotalAmount,
         payment_method: method,
         payment_status: pStatus,
@@ -1009,9 +1025,7 @@ app.post('/api/orders', async (req, res) => {
 
     // 3. Update qr_code_data with payment_mode, order_type, guest info, and status
     const initialQrData = order.qr_code_data || {};
-    const finalToken = isPos
-      ? `#POS-${order.token_number ? order.token_number.replace(/^#[A-Z]+-/, '') : Math.floor(100 + Math.random() * 900)}`
-      : order.token_number;
+    const finalToken = ticketNumber;
 
     const updatedQrData = {
       ...initialQrData,
@@ -1030,9 +1044,11 @@ app.post('/api/orders', async (req, res) => {
       created_at: new Date().toISOString()
     };
 
-    const updatePayload = { qr_code_data: updatedQrData };
+    const updatePayload = {
+      token_number: finalToken,
+      qr_code_data: updatedQrData
+    };
     if (isPos) {
-      updatePayload.token_number = finalToken;
       updatePayload.order_status = 'DELIVERED';
       updatePayload.payment_status = 'PAID';
     }
@@ -1041,6 +1057,9 @@ app.post('/api/orders', async (req, res) => {
       .from('orders')
       .update(updatePayload)
       .eq('id', order.id);
+
+    order.token_number = finalToken;
+    order.qr_code_data = updatedQrData;
 
     // 4. Insert items into order_items (triggers automated stock decrement)
     const orderItems = items.map(item => ({

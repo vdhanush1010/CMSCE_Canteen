@@ -129,6 +129,31 @@ async function fetchProducts() {
   }
 }
 
+async function handleStudentRefresh(btn) {
+  const icon = btn ? btn.querySelector('svg') : null;
+  if (icon) icon.classList.add('animate-spin');
+  if (btn) btn.disabled = true;
+
+  try {
+    await fetchCategories();
+    await fetchProducts();
+    if (typeof renderFrequentlyBought === 'function') renderFrequentlyBought();
+    if (typeof renderCategories === 'function') renderCategories();
+    if (typeof renderCategoryFloatingBar === 'function') renderCategoryFloatingBar();
+    if (typeof renderCategoryProducts === 'function') renderCategoryProducts();
+    if (typeof updateCartBadge === 'function') updateCartBadge();
+    showToast("Menu refreshed", "info");
+  } catch (err) {
+    console.error("Student menu refresh error:", err);
+    showToast("Failed to refresh menu", "error");
+  } finally {
+    setTimeout(() => {
+      if (icon) icon.classList.remove('animate-spin');
+      if (btn) btn.disabled = false;
+    }, 600);
+  }
+}
+
 async function fetchNotices() {
   try {
     const res = await fetch('/api/notices');
@@ -386,7 +411,14 @@ function setupRealtimeListener() {
       async (payload) => {
         console.log('Realtime update received:', payload);
         const updatedOrder = payload.new;
-        await fetchStudentOrders();
+        
+        // Optimistically update orders in memory without blocking SELECT * roundtrip
+        const idx = orders.findIndex(o => o.id === updatedOrder.id);
+        if (idx !== -1) {
+          orders[idx] = { ...orders[idx], ...updatedOrder };
+        } else {
+          orders.unshift(updatedOrder);
+        }
         
         if (document.getElementById("cart-history-view") && !document.getElementById("cart-history-view").classList.contains("hidden")) {
           renderCartHistoryView();
@@ -2426,7 +2458,13 @@ async function verifyUpiAppPayment() {
     return;
   }
 
-  showLoading(true);
+  const verifyBtn = document.getElementById("upi-paid-confirm-btn");
+  const origBtnText = verifyBtn ? verifyBtn.innerHTML : null;
+  if (verifyBtn) {
+    verifyBtn.disabled = true;
+    verifyBtn.innerHTML = '<span class="inline-block animate-spin mr-1.5">⏳</span> Verifying...';
+  }
+
   try {
     const { grandTotal, orderItemsList } = getCartPayload();
     const isGuest = !currentStudent || currentStudent.isGuest || !currentStudent.id;
@@ -2448,7 +2486,10 @@ async function verifyUpiAppPayment() {
     });
 
     const result = await res.json();
-    showLoading(false);
+    if (verifyBtn) {
+      verifyBtn.disabled = false;
+      if (origBtnText) verifyBtn.innerHTML = origBtnText;
+    }
 
     if (!res.ok || !result.success) {
       showToast(result.error || "Error processing payment. Please try again.", "error");
@@ -2473,7 +2514,10 @@ async function verifyUpiAppPayment() {
     closePaymentGatewayModal();
     showConfirmationScreen(finalOrder);
   } catch (err) {
-    showLoading(false);
+    if (verifyBtn) {
+      verifyBtn.disabled = false;
+      if (origBtnText) verifyBtn.innerHTML = origBtnText;
+    }
     console.error("UPI verification error:", err);
     showToast("Error processing payment. Please try again.", "error");
   }
@@ -2492,9 +2536,105 @@ async function placeOrder() {
     return;
   }
 
-  showLoading(true);
+  const placeBtn = document.getElementById("place-order-btn");
+  const origBtnText = placeBtn ? placeBtn.innerHTML : null;
+  if (placeBtn) {
+    placeBtn.disabled = true;
+    placeBtn.innerHTML = '<span class="inline-block animate-spin mr-1.5">⏳</span> Placing Order...';
+  }
+
+  // Track items deducted during this transaction pass for rollback safety
+  const deductedItems = [];
+  let outOfStockItemName = null;
 
   try {
+    // [BEFORE]: Standard checkout sent the order directly to /api/orders without atomic
+    // pre-decrementing against current DB stock, leading to concurrent overselling race conditions.
+    //
+    // [AFTER]: Fail-safe, atomic inventory stock deduction to prevent concurrent overselling.
+    // Verify and decrement item quantity atomically using .gte('stock_quantity', requestedQty).
+    if (typeof supabase !== 'undefined' && supabase) {
+      for (const item of orderItemsList) {
+        const requestedQty = parseInt(item.quantity) || 1;
+
+        // 1. Fetch current real-time stock directly from database
+        const { data: prod, error: fetchErr } = await supabase
+          .from('products')
+          .select('id, name, stock_quantity')
+          .eq('id', item.product_id)
+          .single();
+
+        if (fetchErr || !prod) {
+          outOfStockItemName = item.name || 'Item';
+          break;
+        }
+
+        const currentStock = parseInt(prod.stock_quantity) || 0;
+
+        // 2. If current_stock < requested_quantity, halt immediately
+        if (currentStock < requestedQty) {
+          outOfStockItemName = prod.name || item.name || 'Item';
+          break;
+        }
+
+        // 3. Atomically decrement stock with conditional lock
+        const nextStock = currentStock - requestedQty;
+        const { data: updatedProd, error: updateErr } = await supabase
+          .from('products')
+          .update({ stock_quantity: nextStock })
+          .eq('id', item.product_id)
+          .gte('stock_quantity', requestedQty)
+          .select();
+
+        // If another student checked out concurrently in parallel, updatedProd will have 0 rows
+        if (updateErr || !updatedProd || updatedProd.length === 0) {
+          outOfStockItemName = prod.name || item.name || 'Item';
+          break;
+        }
+
+        deductedItems.push({
+          product_id: item.product_id,
+          quantity: requestedQty
+        });
+      }
+
+      // If current_stock < requested_quantity, halt the checkout immediately
+      if (outOfStockItemName) {
+        // Roll back any items that were deducted during this failed checkout pass
+        for (const d of deductedItems) {
+          try {
+            const { data: cur } = await supabase
+              .from('products')
+              .select('stock_quantity')
+              .eq('id', d.product_id)
+              .single();
+            if (cur) {
+              await supabase
+                .from('products')
+                .update({ stock_quantity: (cur.stock_quantity || 0) + d.quantity })
+                .eq('id', d.product_id);
+            }
+          } catch (e) {
+            console.error("Stock rollback error:", e);
+          }
+        }
+
+        if (placeBtn) {
+          placeBtn.disabled = false;
+          if (origBtnText) placeBtn.innerHTML = origBtnText;
+        }
+        showToast(`${outOfStockItemName} is out of stock or quantity no longer available!`, "error");
+
+        // Refresh the cart and menu views
+        await fetchProducts();
+        renderMenu();
+        updateCartBadge();
+        renderCartDrawer();
+        return;
+      }
+    }
+
+    // If current_stock >= requested_quantity, deduct the stock and proceed with order placement
     const isGuest = !currentStudent || currentStudent.isGuest || !currentStudent.id;
     const studentId = isGuest ? null : currentStudent.id;
     const guestName = isGuest ? (currentStudent?.name || 'Guest User') : null;
@@ -2511,15 +2651,39 @@ async function placeOrder() {
         payment_method: paymentMethod,
         payment_status: paymentStatus,
         is_guest: isGuest,
-        guest_name: guestName
+        guest_name: guestName,
+        stock_pre_deducted: deductedItems.length > 0
       })
     });
 
     const result = await res.json();
-    showLoading(false);
+    if (placeBtn) {
+      placeBtn.disabled = false;
+      if (origBtnText) placeBtn.innerHTML = origBtnText;
+    }
 
     if (!res.ok || !result.success) {
+      // Rollback deducted stock on order insertion failure
+      for (const d of deductedItems) {
+        try {
+          const { data: cur } = await supabase
+            .from('products')
+            .select('stock_quantity')
+            .eq('id', d.product_id)
+            .single();
+          if (cur) {
+            await supabase
+              .from('products')
+              .update({ stock_quantity: (cur.stock_quantity || 0) + d.quantity })
+              .eq('id', d.product_id);
+          }
+        } catch (e) {}
+      }
       showToast(result.error || "Order failed. Please check stock and try again.", "error");
+      await fetchProducts();
+      renderMenu();
+      updateCartBadge();
+      renderCartDrawer();
       return;
     }
 
@@ -2540,7 +2704,26 @@ async function placeOrder() {
 
     showConfirmationScreen(finalOrder);
   } catch (err) {
-    showLoading(false);
+    // Rollback deducted stock if unexpected error is thrown
+    for (const d of deductedItems) {
+      try {
+        const { data: cur } = await supabase
+          .from('products')
+          .select('stock_quantity')
+          .eq('id', d.product_id)
+          .single();
+        if (cur) {
+          await supabase
+            .from('products')
+            .update({ stock_quantity: (cur.stock_quantity || 0) + d.quantity })
+            .eq('id', d.product_id);
+        }
+      } catch (e) {}
+    }
+    if (placeBtn) {
+      placeBtn.disabled = false;
+      if (origBtnText) placeBtn.innerHTML = origBtnText;
+    }
     console.error("Place order error:", err);
     showToast("Failed to place order. Please try again.", "error");
   }
@@ -3371,6 +3554,85 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Poll canteen status every 10 seconds
   setInterval(fetchCanteenStatus, 10000);
   
+  initHelpGuideModal();
   lucide.createIcons();
 });
+
+// 12. Student User Guide (Help & Support Modal)
+async function openHelpGuide() {
+  if (typeof toggleDrawer === 'function') toggleDrawer(false);
+
+  const modal = document.getElementById('helpGuideModal');
+  const helpGuideList = document.getElementById('helpGuideList');
+  if (!modal) return;
+
+  modal.style.display = 'flex';
+
+  if (helpGuideList) {
+    helpGuideList.innerHTML = '<p class="help-loading-text">Loading guide...</p>';
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('help_guides')
+      .select('*')
+      .order('step_number', { ascending: true });
+
+    if (error) throw error;
+
+    if (!helpGuideList) return;
+
+    if (!data || data.length === 0) {
+      helpGuideList.innerHTML = '<p class="text-slate-500 text-xs text-center py-6">No guide steps available at this time.</p>';
+      return;
+    }
+
+    helpGuideList.innerHTML = data.map(item => `
+      <div class="help-step-item flex gap-3.5 p-3.5 rounded-xl bg-slate-50 border border-slate-100 hover:border-emerald-200 transition-colors">
+        <div class="flex-shrink-0 w-7 h-7 rounded-full bg-emerald-500/15 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
+          ${item.step_number}
+        </div>
+        <div class="flex-1 min-w-0">
+          <h4 class="text-xs font-bold text-slate-800 leading-snug">${item.title || ''}</h4>
+          <p class="text-[11px] text-slate-600 mt-1 leading-relaxed">${item.description || ''}</p>
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.error("Failed to load help guide:", err);
+    if (helpGuideList) {
+      helpGuideList.innerHTML = '<p class="text-rose-500 text-xs py-4 text-center">Unable to load guide at the moment.</p>';
+    }
+  }
+}
+
+function closeHelpGuide() {
+  const modal = document.getElementById('helpGuideModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function initHelpGuideModal() {
+  const modal = document.getElementById('helpGuideModal');
+  const closeBtn = document.getElementById('closeHelpModalBtn');
+  const drawerHelpBtn = document.getElementById('drawer-help-btn');
+
+  if (closeBtn) {
+    closeBtn.onclick = closeHelpGuide;
+  }
+
+  if (modal) {
+    modal.onclick = (e) => {
+      if (e.target === modal) {
+        closeHelpGuide();
+      }
+    };
+  }
+
+  if (drawerHelpBtn) {
+    drawerHelpBtn.onclick = (e) => {
+      if (e) e.preventDefault();
+      openHelpGuide();
+    };
+  }
+}
 

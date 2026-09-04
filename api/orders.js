@@ -236,8 +236,8 @@ module.exports = async (req, res) => {
           return sendResponse(res, 404, false, `Product not found: ${item.name || prodId}`);
         }
 
-        if (dbProd.stock_quantity < qty) {
-          return sendResponse(res, 400, false, `Insufficient stock for "${dbProd.name}". Available: ${dbProd.stock_quantity}, requested: ${qty}`);
+        if (!body.stock_pre_deducted && dbProd.stock_quantity < qty) {
+          return sendResponse(res, 400, false, `${dbProd.name} is out of stock or quantity no longer available!`);
         }
 
         const unitPrice = parseFloat(dbProd.price);
@@ -250,16 +250,27 @@ module.exports = async (req, res) => {
         });
       }
 
-      // Generate Unique Token
-      const prefix = order_type === 'POS' ? '#POS' : (is_guest || !student_id ? '#GST' : '#TK');
-      const tokenNumber = `${prefix}-${Math.floor(100 + Math.random() * 900)}`;
+      // Generate Daily Reset Order Token (#TK-101 onwards)
+      let ticketNumber = body.token_number || body.ticket_number;
+      if (!ticketNumber) {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+
+        const { count } = await supabase
+          .from('orders')
+          .select('*', { count: 'exact', head: true })
+          .gte('created_at', startOfToday.toISOString());
+
+        const dailySeq = (count || 0) + 101;
+        ticketNumber = `#TK-${dailySeq}`;
+      }
 
       const initialOrderStatus = order_type === 'POS' ? 'DELIVERED' : 'PENDING_PICKUP';
       const initialPaymentStatus = payment_status || (payment_method === 'ONLINE' || order_type === 'POS' ? 'PAID' : 'PENDING');
       const paymentMode = payment_method === 'ONLINE' ? 'UPI' : 'CASH';
 
       const qrPayload = {
-        token_number: tokenNumber,
+        token_number: ticketNumber,
         order_type: order_type || (is_guest ? 'GUEST_ORDER' : 'STUDENT_ORDER'),
         payment_mode: paymentMode,
         payment_status: initialPaymentStatus,
@@ -274,7 +285,7 @@ module.exports = async (req, res) => {
         .from('orders')
         .insert([{
           student_id: student_id || null,
-          token_number: tokenNumber,
+          token_number: ticketNumber,
           total_amount: totalAmount,
           payment_method: payment_method === 'ONLINE' ? 'ONLINE' : 'CASH_AT_COUNTER',
           payment_status: initialPaymentStatus,
@@ -286,11 +297,8 @@ module.exports = async (req, res) => {
 
       if (insertOrderErr) throw insertOrderErr;
 
-      // Ensure POS orders persist POS identity and #POS prefix past any BEFORE INSERT triggers
       const isPos = order_type === 'POS' || body.order_source === 'POS' || body.is_pos === true;
-      const finalToken = isPos 
-        ? `#POS-${newOrder.token_number ? newOrder.token_number.replace(/^#[A-Z]+-/, '') : Math.floor(100 + Math.random() * 900)}` 
-        : newOrder.token_number;
+      const finalToken = ticketNumber;
 
       const finalQrData = {
         ...(typeof newOrder.qr_code_data === 'object' ? newOrder.qr_code_data : {}),
@@ -304,9 +312,11 @@ module.exports = async (req, res) => {
         total_amount: totalAmount
       };
 
-      const updatePayload = { qr_code_data: finalQrData };
+      const updatePayload = {
+        token_number: finalToken,
+        qr_code_data: finalQrData
+      };
       if (isPos) {
-        updatePayload.token_number = finalToken;
         updatePayload.order_status = 'DELIVERED';
         updatePayload.payment_status = 'PAID';
       }
@@ -335,14 +345,16 @@ module.exports = async (req, res) => {
 
       if (insertItemsErr) throw insertItemsErr;
 
-      // 3. Decrement Product Stock
+      // 3. Update Product Stock (prevent double decrement if pre-deducted atomically)
       for (const oi of orderItemsToInsert) {
         const dbProd = dbProducts.find(p => p.id === oi.product_id);
         if (dbProd) {
-          const newStock = Math.max(0, dbProd.stock_quantity - oi.quantity);
+          const finalStock = body.stock_pre_deducted
+            ? dbProd.stock_quantity
+            : Math.max(0, dbProd.stock_quantity - oi.quantity);
           await supabase
             .from('products')
-            .update({ stock_quantity: newStock })
+            .update({ stock_quantity: finalStock })
             .eq('id', oi.product_id);
         }
       }

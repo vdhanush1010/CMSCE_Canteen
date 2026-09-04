@@ -322,9 +322,15 @@
       <!-- Main Body: Active Order Queue takes full primary view -->
       <div id="live-order-logs-container" class="card-dark p-6 space-y-4">
         <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2.5">
             <h3 class="font-bold text-sm uppercase text-slate-300 tracking-wider">Active Order Queue</h3>
             <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+            <!-- Manual Refresh Button with circular arrows icon -->
+            <button id="manual-refresh-orders-btn" onclick="handleManualOrderRefresh()"
+              class="w-7 h-7 rounded-full bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition-all flex items-center justify-center shadow-sm active:scale-95 ml-1 focus:outline-none"
+              title="Refresh order queue">
+              <i data-lucide="refresh-cw" id="manual-refresh-orders-icon" class="w-3.5 h-3.5 transition-transform duration-500"></i>
+            </button>
           </div>
           <span class="text-xs text-slate-400">Live Realtime Updates</span>
         </div>
@@ -402,6 +408,14 @@
                 <span id="pos-items-count"
                   class="text-[10px] font-bold text-slate-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-full">0
                   items</span>
+                <button id="pos-refresh-btn" type="button" class="refresh-btn text-slate-400 hover:text-white" onclick="handlePosRefresh(this)" title="Refresh menu & stock availability">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                    <path d="M21 3v5h-5"/>
+                    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                    <path d="M3 21v-5h5"/>
+                  </svg>
+                </button>
               </div>
               <span class="text-[11px] text-slate-400 flex items-center gap-1">
                 <i data-lucide="touch-pad" class="w-3.5 h-3.5 text-primary"></i> Tap card or [+] to add
@@ -480,9 +494,19 @@
         <div
           class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <div>
-            <h2 class="text-base font-bold text-slate-100 flex items-center gap-2 font-poppins">
-              <i data-lucide="trending-up" class="w-5 h-5 text-primary"></i> Sales Analytics &amp; Revenue Intelligence
-            </h2>
+            <div class="flex items-center gap-2">
+              <h2 class="text-base font-bold text-slate-100 flex items-center gap-2 font-poppins">
+                <i data-lucide="trending-up" class="w-5 h-5 text-primary"></i> Sales Analytics &amp; Revenue Intelligence
+              </h2>
+              <button id="sales-refresh-btn" type="button" class="refresh-btn text-slate-400 hover:text-white" onclick="handleSalesRefresh(this)" title="Refresh sales analytics">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                  <path d="M21 3v5h-5"/>
+                  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                  <path d="M3 21v-5h5"/>
+                </svg>
+              </button>
+            </div>
             <p class="text-xs text-slate-400 mt-0.5">Deep-dive financial breakdown across payment methods and sales
               channels.</p>
           </div>
@@ -743,7 +767,17 @@
         <div
           class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <div>
-            <h3 class="font-bold text-sm uppercase text-slate-300 tracking-wider">Canteen Inventory List</h3>
+            <div class="flex items-center gap-2">
+              <h3 class="font-bold text-sm uppercase text-slate-300 tracking-wider">Canteen Inventory List</h3>
+              <button id="inventory-refresh-btn" type="button" class="refresh-btn text-slate-400 hover:text-white" onclick="handleInventoryRefresh(this)" title="Refresh inventory list">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                  <path d="M21 3v5h-5"/>
+                  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                  <path d="M3 21v-5h5"/>
+                </svg>
+              </button>
+            </div>
             <p class="text-xs text-slate-400 mt-0.5">Manage item pricing, stock quantities, and barcodes</p>
           </div>
           <div class="flex items-center gap-2">
@@ -954,9 +988,19 @@
         <div
           class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
           <div>
-            <h2 class="text-base font-bold text-slate-100 flex items-center gap-2 font-poppins">
-              <i data-lucide="history" class="w-5 h-5 text-primary"></i> Order History & Transaction Logs
-            </h2>
+            <div class="flex items-center gap-2">
+              <h2 class="text-base font-bold text-slate-100 flex items-center gap-2 font-poppins">
+                <i data-lucide="history" class="w-5 h-5 text-primary"></i> Order History &amp; Transaction Logs
+              </h2>
+              <button id="history-refresh-btn" type="button" class="refresh-btn text-slate-400 hover:text-white" onclick="handleHistoryRefresh(this)" title="Refresh order history">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+                  <path d="M21 3v5h-5"/>
+                  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+                  <path d="M3 21v-5h5"/>
+                </svg>
+              </button>
+            </div>
             <p class="text-xs text-slate-400 mt-0.5">Audit and review all online mobile orders and counter walk-in POS
               transactions.</p>
           </div>

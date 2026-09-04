@@ -25,6 +25,10 @@ let posCart = {}; // { [productId]: { product, quantity } }
 let posSearchQuery = '';
 let posSelectedCategory = 'all';
 
+// Auto-Polling Interval Instances (Memory-Safe)
+let quickSellInterval = null;
+let inventoryInterval = null;
+
 // Dual-Mode Scanning Engine State
 let scanBuffer = '';
 let scanBufferTimer = null;
@@ -145,6 +149,9 @@ async function handleManagerLogin(event) {
 }
 
 function handleLogout() {
+  stopOrderPolling();
+  stopQuickSellPolling();
+  stopInventoryPolling();
   sessionStorage.removeItem("manager_auth");
   sessionStorage.removeItem("canteen_manager_auth");
   if (activeOrdersChannel && supabase) {
@@ -194,6 +201,9 @@ async function initDashboard() {
   renderPosMenu();
   renderPosCart();
   setupRealtimeOrdersListener();
+  startOrderPolling();
+  startQuickSellPolling();
+  startInventoryPolling();
   
   // Theme Mode restore
   const savedTheme = localStorage.getItem("manager-theme") || "dark";
@@ -310,18 +320,279 @@ async function fetchProducts() {
   }
 }
 
-async function fetchOrders() {
+// 6. ORDER POLLING & AUTO-REFRESH MECHANISM
+let pollInterval = null;
+
+function startOrderPolling() {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(async () => {
+    // Fetch orders silently in background without showing full-page loader
+    await fetchOrders({ silent: true });
+  }, 10000);
+}
+
+function stopOrderPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+}
+
+async function handleManualOrderRefresh() {
+  const icon = document.getElementById("manual-refresh-orders-icon");
+  const btn = document.getElementById("manual-refresh-orders-btn");
+
+  if (icon) icon.classList.add("animate-spin");
+  if (btn) btn.disabled = true;
+
+  try {
+    await fetchOrders({ silent: true });
+    renderOrderQueue();
+    updateTopLiveMetricCards();
+    showToast("Order queue refreshed", "info");
+  } catch (err) {
+    console.error("Manual refresh error:", err);
+    showToast("Failed to refresh orders", "error");
+  } finally {
+    setTimeout(() => {
+      if (icon) icon.classList.remove("animate-spin");
+      if (btn) btn.disabled = false;
+    }, 600);
+  }
+}
+
+// 7. DEDICATED SECTION REFRESH & BACKGROUND POLLING HANDLERS
+
+// (1) Inventory List Background Polling & Stock Patching
+function getInventoryStockBadgeHTML(qty) {
+  if (qty === 0) {
+    return `
+      <span class="inline-flex items-center gap-1.5 bg-rose-500/15 text-rose-400 border border-rose-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide whitespace-nowrap shadow-sm">
+        <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span> 0 &bull; Out of Stock
+      </span>
+    `;
+  } else if (qty <= 10) {
+    return `
+      <span class="inline-flex items-center gap-1.5 bg-amber-500/15 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide whitespace-nowrap shadow-sm">
+        <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span> ${qty} &bull; Low Stock
+      </span>
+    `;
+  } else {
+    return `
+      <span class="inline-flex items-center gap-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> ${qty} in stock
+      </span>
+    `;
+  }
+}
+
+function patchInventoryTableDOM() {
+  const tbody = document.getElementById("inventory-table-body");
+  if (!tbody) return;
+
+  const badgeEl = document.getElementById("total-items-badge");
+  if (badgeEl) badgeEl.innerText = products.length;
+
+  products.forEach(p => {
+    const qty = parseInt(p.stock_quantity) || 0;
+    const cell = document.getElementById(`inventory-stock-cell-${p.id}`);
+    if (cell) {
+      const stockBadge = getInventoryStockBadgeHTML(qty);
+      cell.innerHTML = `
+        <div class="flex items-center justify-center gap-2">
+          <button onclick="updateProductStock('${p.id}', ${Math.max(0, qty - 1)})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded active:scale-95 transition-all">-</button>
+          ${stockBadge}
+          <button onclick="updateProductStock('${p.id}', ${qty + 1})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded active:scale-95 transition-all">+</button>
+        </div>
+      `;
+    }
+
+    const row = document.getElementById(`inventory-row-${p.id}`);
+    if (row) {
+      row.className = `border-b border-slate-800/40 hover:bg-slate-800/10 transition-colors ${qty === 0 ? 'bg-rose-950/5' : (qty <= 10 ? 'bg-amber-950/5' : '')}`;
+    }
+  });
+}
+
+async function fetchInventory(options = {}) {
+  const silent = options && options.silent === true;
+  await fetchProducts();
+  await fetchCategories();
+  if (silent) {
+    patchInventoryTableDOM();
+  } else {
+    renderInventoryTable();
+  }
+}
+
+function startInventoryPolling() {
+  if (inventoryInterval) clearInterval(inventoryInterval);
+  inventoryInterval = setInterval(() => {
+    if (currentView === 'inventory') {
+      fetchInventory({ silent: true });
+    }
+  }, 8000);
+}
+
+function stopInventoryPolling() {
+  if (inventoryInterval) {
+    clearInterval(inventoryInterval);
+    inventoryInterval = null;
+  }
+}
+
+async function handleInventoryRefresh(btn) {
+  if (btn) btn.classList.add('spinning');
+  try {
+    await fetchInventory();
+    showToast("Inventory list refreshed", "info");
+  } catch (err) {
+    console.error("Inventory refresh error:", err);
+    showToast("Failed to refresh inventory", "error");
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+  }
+}
+
+// (2) Order History Refresh
+async function handleHistoryRefresh(btn) {
+  if (btn) btn.classList.add('spinning');
+  try {
+    const historyRecords = await fetchOrderHistory();
+    if (Array.isArray(historyRecords) && historyRecords.length > 0) {
+      orders = historyRecords;
+    }
+    filterHistoryTable();
+    showToast("Order history refreshed", "info");
+  } catch (err) {
+    console.error("History refresh error:", err);
+    showToast("Failed to refresh history", "error");
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+  }
+}
+
+// (3) Quick Sell / Spot Order Background Polling & Stock Patching
+function patchPosMenuDOM() {
+  const grid = document.getElementById("pos-items-grid");
+  if (!grid) return;
+
+  const countBadge = document.getElementById("pos-items-count");
+  let filtered = products.filter(p => p.stock_quantity > 0);
+  if (posSelectedCategory !== 'all') {
+    filtered = filtered.filter(p => p.category_id === posSelectedCategory);
+  }
+  if (posSearchQuery) {
+    filtered = filtered.filter(p => p.name.toLowerCase().includes(posSearchQuery) || (p.barcode_id && p.barcode_id.toLowerCase().includes(posSearchQuery)));
+  }
+  if (countBadge) {
+    countBadge.innerText = `${filtered.length} ${filtered.length === 1 ? 'item' : 'items'}`;
+  }
+
+  let needsFullRender = false;
+  products.forEach(p => {
+    const badge = document.getElementById(`pos-stock-badge-${p.id}`);
+    if (badge) {
+      badge.innerText = `(${p.stock_quantity})`;
+    } else if (p.stock_quantity > 0 && !document.getElementById(`pos-item-card-${p.id}`)) {
+      needsFullRender = true;
+    }
+
+    const card = document.getElementById(`pos-item-card-${p.id}`);
+    if (card && p.stock_quantity <= 0) {
+      needsFullRender = true;
+    }
+
+    // Keep active posCart item data in sync with latest price/stock without resetting selection
+    if (posCart[p.id]) {
+      posCart[p.id].product = p;
+    }
+  });
+
+  // Re-render only if items became newly available or went out of stock and search input isn't active
+  const isSearchActive = (document.activeElement && document.activeElement.id === 'posSearch');
+  if (needsFullRender && !isSearchActive) {
+    renderPosMenu();
+  }
+}
+
+async function fetchQuickSellItems(options = {}) {
+  const silent = options && options.silent === true;
+  await fetchProducts();
+  await fetchCategories();
+  if (silent) {
+    patchPosMenuDOM();
+  } else {
+    renderPosCategories();
+    renderPosMenu();
+  }
+}
+
+function startQuickSellPolling() {
+  if (quickSellInterval) clearInterval(quickSellInterval);
+  quickSellInterval = setInterval(() => {
+    if (currentView === 'pos') {
+      fetchQuickSellItems({ silent: true });
+    }
+  }, 5000);
+}
+
+function stopQuickSellPolling() {
+  if (quickSellInterval) {
+    clearInterval(quickSellInterval);
+    quickSellInterval = null;
+  }
+}
+
+async function handlePosRefresh(btn) {
+  if (btn) btn.classList.add('spinning');
+  try {
+    await fetchQuickSellItems();
+    showToast("Spot menu & stock refreshed", "info");
+  } catch (err) {
+    console.error("POS stock refresh error:", err);
+    showToast("Failed to refresh stock", "error");
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+  }
+}
+
+// (4) Sales Analytics Refresh & Recalculation
+async function loadAnalytics() {
+  await fetchOrders({ silent: true });
+  await applySalesDateFilter();
+}
+
+async function handleSalesRefresh(btn) {
+  if (btn) btn.classList.add('spinning');
+  try {
+    await loadAnalytics();
+    showToast("Sales analytics updated", "info");
+  } catch (err) {
+    console.error("Sales analytics refresh error:", err);
+    showToast("Failed to refresh sales analytics", "error");
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+  }
+}
+
+async function fetchOrders(options = {}) {
+  const silent = Boolean(options && options.silent);
   try {
     const res = await fetch('/api/orders?type=all');
     if (res.ok) {
       const result = await res.json();
       if (result.success && Array.isArray(result.data)) {
         orders = result.data;
+        if (silent) {
+          renderOrderQueue();
+          updateTopLiveMetricCards();
+        }
         return orders;
       }
     }
   } catch (err) {
-    console.warn("API orders fetch warning, trying Supabase direct:", err);
+    if (!silent) console.warn("API orders fetch warning, trying Supabase direct:", err);
   }
 
   // Direct Supabase fallback
@@ -352,10 +623,14 @@ async function fetchOrders() {
 
       if (!error && Array.isArray(data)) {
         orders = data;
+        if (silent) {
+          renderOrderQueue();
+          updateTopLiveMetricCards();
+        }
         return orders;
       }
     } catch (sbErr) {
-      console.error("Supabase direct orders error:", sbErr);
+      if (!silent) console.error("Supabase direct orders error:", sbErr);
     }
   }
 
@@ -963,7 +1238,7 @@ function renderInventoryTable() {
     }
 
     return `
-      <tr class="border-b border-slate-800/40 hover:bg-slate-800/10 transition-colors ${qty === 0 ? 'bg-rose-950/5' : (qty <= 10 ? 'bg-amber-950/5' : '')}">
+      <tr id="inventory-row-${p.id}" class="border-b border-slate-800/40 hover:bg-slate-800/10 transition-colors ${qty === 0 ? 'bg-rose-950/5' : (qty <= 10 ? 'bg-amber-950/5' : '')}">
         <td class="py-3 flex items-center gap-3">
           <img src="${p.image_url || 'https://images.unsplash.com/photo-1546273031-28b72a64353b?w=100'}" alt="${p.name}" class="w-8 h-8 rounded-lg object-cover flex-shrink-0 bg-slate-900 border border-slate-800">
           <div class="truncate max-w-[140px]">
@@ -977,7 +1252,7 @@ function renderInventoryTable() {
           </span>
         </td>
         <td class="py-3 text-right font-bold text-slate-300">₹${p.price.toFixed(2)}</td>
-        <td class="py-3 text-center">
+        <td class="py-3 text-center" id="inventory-stock-cell-${p.id}">
           <div class="flex items-center justify-center gap-2">
             <button onclick="updateProductStock('${p.id}', ${Math.max(0, qty - 1)})" class="w-6 h-6 flex items-center justify-center bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-bold rounded active:scale-95 transition-all">-</button>
             ${stockBadge}
@@ -1915,7 +2190,117 @@ function closeOrderDetailModal() {
   }
 }
 
-// 15. Active Order Queue Rendering (Original Card Layout)
+// 15. Active Order Queue Rendering (Non-Destructive Patching)
+function generateOrderCardHTML(o) {
+  const now = Date.now();
+  const timeStr = o.created_at 
+    ? new Date(o.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) 
+    : 'Just now';
+  const isPaid = o.payment_status === 'PAID';
+  const orderCreatedAt = o.created_at ? new Date(o.created_at).getTime() : now;
+  const elapsedSec = Math.floor((now - orderCreatedAt) / 1000);
+  const remSeconds = Math.max(0, 30 * 60 - elapsedSec);
+  const remM = Math.floor(remSeconds / 60);
+  const remS = remSeconds % 60;
+  const countdownText = `${remM}m ${String(remS).padStart(2, '0')}s left`;
+
+  // Extract payment_mode ('CASH' vs 'UPI') and check guest status
+  let paymentMode = 'CASH';
+  let isGuest = false;
+  let guestName = '';
+
+  if (o.qr_code_data) {
+    try {
+      const qd = typeof o.qr_code_data === 'string' ? JSON.parse(o.qr_code_data) : o.qr_code_data;
+      if (qd?.payment_mode) paymentMode = qd.payment_mode;
+      else if (o.payment_method === 'ONLINE') paymentMode = 'UPI';
+
+      if (qd?.order_type === 'GUEST_ORDER' || qd?.is_guest) {
+        isGuest = true;
+        guestName = qd.guest_name || 'Guest User';
+      }
+    } catch (e) {}
+  } else if (o.payment_method === 'ONLINE') {
+    paymentMode = 'UPI';
+  }
+
+  if (!isGuest && !o.student_id && o.order_type !== 'POS') {
+    if (o.students && (o.students.reg_no === 'GUEST' || (o.students.name && o.students.name.startsWith('Guest')))) {
+      isGuest = true;
+      guestName = o.students.name;
+    }
+  }
+
+  // High-visibility guest badge
+  const guestBadge = isGuest ? `
+    <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-sm whitespace-nowrap">
+      <i data-lucide="user-x" class="w-3 h-3 text-purple-400"></i> GUEST ORDER
+    </span>
+  ` : '';
+
+  // Status / Payment Mode Badge:
+  let modeBadge = '';
+  if (!isPaid) {
+    if (paymentMode === 'CASH') {
+      modeBadge = `
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm whitespace-nowrap">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          💵 Expected: CASH
+        </span>
+      `;
+    } else {
+      modeBadge = `
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black bg-blue-500/15 text-blue-400 border border-blue-500/30 shadow-sm whitespace-nowrap">
+          <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
+          📱 Expected: UPI QR
+        </span>
+      `;
+    }
+  } else {
+    modeBadge = `
+      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 whitespace-nowrap">
+        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        Pre-paid (${paymentMode})
+      </span>
+    `;
+  }
+
+  // Single-action delivery & payment button: [ ⚡ Verify & Deliver ]
+  const actionBtns = `
+    <button onclick="event.stopPropagation(); executeQuickVerify('${o.token_number || o.id}')"
+      class="px-4 py-2.5 bg-primary hover:bg-primary-dark text-slate-950 font-black rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 shadow-md active:scale-95 whitespace-nowrap">
+      <i data-lucide="zap" class="w-4 h-4"></i> ⚡ Verify & Deliver
+    </button>
+  `;
+
+  const customerDisplay = isGuest 
+    ? `<span class="text-purple-300 font-bold">👤 ${guestName || 'Guest User'}</span> <span class="text-purple-400/80 text-[10px] font-semibold">(Table QR Guest)</span>`
+    : (o.students ? `${o.students.name} ${o.students.reg_no ? `(${o.students.reg_no})` : ''}` : (o.order_type === 'POS' ? 'Spot Counter Sale' : 'Student Customer'));
+
+  return `
+    <div id="order-card-${o.id}" data-order-id="${o.id}" onclick="openOrderDetailModalByID('${o.id}')" class="order-queue-card p-4 bg-slate-900/80 rounded-2xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs cursor-pointer hover:bg-slate-800/80 hover:border-slate-700 transition-all shadow-md">
+      <div class="space-y-1 min-w-0">
+        <div class="flex items-center gap-2.5 flex-wrap">
+          <span class="font-black text-primary tracking-wider text-base">${o.token_number || '#TK'}</span>
+          ${guestBadge}
+          ${modeBadge}
+        </div>
+        <p class="text-slate-300 font-semibold text-xs mt-1 truncate">${customerDisplay} &bull; <span class="text-slate-400 text-[10px]">${timeStr}</span></p>
+        ${!isPaid ? `
+          <p class="text-[10px] text-amber-400 font-medium flex items-center gap-1.5 mt-0.5">
+            <i data-lucide="clock" class="w-3 h-3 text-amber-400"></i>
+            <span class="queue-card-timer font-mono font-bold" data-created-at="${orderCreatedAt}">${countdownText}</span>
+          </p>
+        ` : ''}
+      </div>
+      <div class="flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-3 flex-shrink-0">
+        <span class="font-black text-slate-100 text-base">₹${parseFloat(o.total_amount || 0).toFixed(2)}</span>
+        ${actionBtns}
+      </div>
+    </div>
+  `;
+}
+
 function renderOrderQueue() {
   const queue = document.getElementById("live-orders-list");
   const queueCountEl = document.getElementById("tab-queue-count");
@@ -1948,116 +2333,52 @@ function renderOrderQueue() {
     return;
   }
 
-  queue.innerHTML = pending.map(o => {
-    const timeStr = o.created_at 
-      ? new Date(o.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) 
-      : 'Just now';
-    const isPaid = o.payment_status === 'PAID';
-    const orderCreatedAt = o.created_at ? new Date(o.created_at).getTime() : now;
-    const elapsedSec = Math.floor((now - orderCreatedAt) / 1000);
-    const remSeconds = Math.max(0, 30 * 60 - elapsedSec);
-    const remM = Math.floor(remSeconds / 60);
-    const remS = remSeconds % 60;
-    const countdownText = `${remM}m ${String(remS).padStart(2, '0')}s left`;
+  // Remove empty state placeholder if present
+  const emptyPlaceholder = queue.querySelector('.text-center');
+  if (emptyPlaceholder) {
+    emptyPlaceholder.remove();
+  }
 
-    // Extract payment_mode ('CASH' vs 'UPI') and check guest status
-    let paymentMode = 'CASH';
-    let isGuest = false;
-    let guestName = '';
+  const existingCards = queue.querySelectorAll('.order-queue-card');
 
-    if (o.qr_code_data) {
-      try {
-        const qd = typeof o.qr_code_data === 'string' ? JSON.parse(o.qr_code_data) : o.qr_code_data;
-        if (qd?.payment_mode) paymentMode = qd.payment_mode;
-        else if (o.payment_method === 'ONLINE') paymentMode = 'UPI';
+  // If queue is completely empty in DOM, perform full initial render
+  if (existingCards.length === 0) {
+    queue.innerHTML = pending.map(o => generateOrderCardHTML(o)).join('');
+    if (window.lucide) lucide.createIcons();
+    startManagerQueueCountdownTicker();
+    return;
+  }
 
-        if (qd?.order_type === 'GUEST_ORDER' || qd?.is_guest) {
-          isGuest = true;
-          guestName = qd.guest_name || 'Guest User';
-        }
-      } catch (e) {}
-    } else if (o.payment_method === 'ONLINE') {
-      paymentMode = 'UPI';
+  const incomingIds = new Set(pending.map(o => String(o.id)));
+
+  // 1. Non-destructively remove cards that are no longer pending
+  existingCards.forEach(card => {
+    const cardId = card.getAttribute('data-order-id');
+    if (!incomingIds.has(cardId)) {
+      card.remove();
     }
+  });
 
-    if (!isGuest && !o.student_id && o.order_type !== 'POS') {
-      if (o.students && (o.students.reg_no === 'GUEST' || (o.students.name && o.students.name.startsWith('Guest')))) {
-        isGuest = true;
-        guestName = o.students.name;
-      }
+  // 2. Identify new orders not yet rendered in DOM
+  const newOrdersToInsert = [];
+  pending.forEach(o => {
+    const card = document.getElementById(`order-card-${o.id}`);
+    if (!card) {
+      newOrdersToInsert.push(o);
     }
+  });
 
-    // High-visibility guest badge
-    const guestBadge = isGuest ? `
-      <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-sm whitespace-nowrap">
-        <i data-lucide="user-x" class="w-3 h-3 text-purple-400"></i> GUEST ORDER
-      </span>
-    ` : '';
-
-    // Status / Payment Mode Badge:
-    let modeBadge = '';
-    if (!isPaid) {
-      if (paymentMode === 'CASH') {
-        modeBadge = `
-          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm whitespace-nowrap">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            💵 Expected: CASH
-          </span>
-        `;
-      } else {
-        modeBadge = `
-          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black bg-blue-500/15 text-blue-400 border border-blue-500/30 shadow-sm whitespace-nowrap">
-            <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
-            📱 Expected: UPI QR
-          </span>
-        `;
-      }
-    } else {
-      modeBadge = `
-        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 whitespace-nowrap">
-          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-          Pre-paid (${paymentMode})
-        </span>
-      `;
+  // 3. Patch only newly detected orders smoothly at the top of the queue container
+  if (newOrdersToInsert.length > 0) {
+    // Insert in reverse order so the most recent order ends up at the top
+    for (let i = newOrdersToInsert.length - 1; i >= 0; i--) {
+      const o = newOrdersToInsert[i];
+      const cardHtml = generateOrderCardHTML(o);
+      queue.insertAdjacentHTML('afterbegin', cardHtml);
     }
+    if (window.lucide) lucide.createIcons();
+  }
 
-    // Single-action delivery & payment button: [ ⚡ Verify & Deliver ]
-    const actionBtns = `
-      <button onclick="event.stopPropagation(); executeQuickVerify('${o.token_number || o.id}')"
-        class="px-4 py-2.5 bg-primary hover:bg-primary-dark text-slate-950 font-black rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 shadow-md active:scale-95 whitespace-nowrap">
-        <i data-lucide="zap" class="w-4 h-4"></i> ⚡ Verify & Deliver
-      </button>
-    `;
-
-    const customerDisplay = isGuest 
-      ? `<span class="text-purple-300 font-bold">👤 ${guestName || 'Guest User'}</span> <span class="text-purple-400/80 text-[10px] font-semibold">(Table QR Guest)</span>`
-      : (o.students ? `${o.students.name} ${o.students.reg_no ? `(${o.students.reg_no})` : ''}` : (o.order_type === 'POS' ? 'Spot Counter Sale' : 'Student Customer'));
-
-    return `
-      <div onclick="openOrderDetailModalByID('${o.id}')" class="p-4 bg-slate-900/80 rounded-2xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs cursor-pointer hover:bg-slate-800/80 hover:border-slate-700 transition-all shadow-md">
-        <div class="space-y-1 min-w-0">
-          <div class="flex items-center gap-2.5 flex-wrap">
-            <span class="font-black text-primary tracking-wider text-base">${o.token_number || '#TK'}</span>
-            ${guestBadge}
-            ${modeBadge}
-          </div>
-          <p class="text-slate-300 font-semibold text-xs mt-1 truncate">${customerDisplay} &bull; <span class="text-slate-400 text-[10px]">${timeStr}</span></p>
-          ${!isPaid ? `
-            <p class="text-[10px] text-amber-400 font-medium flex items-center gap-1.5 mt-0.5">
-              <i data-lucide="clock" class="w-3 h-3 text-amber-400"></i>
-              <span class="queue-card-timer font-mono font-bold" data-created-at="${orderCreatedAt}">${countdownText}</span>
-            </p>
-          ` : ''}
-        </div>
-        <div class="flex flex-row sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-3 flex-shrink-0">
-          <span class="font-black text-slate-100 text-base">₹${parseFloat(o.total_amount || 0).toFixed(2)}</span>
-          ${actionBtns}
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  if (window.lucide) lucide.createIcons();
   startManagerQueueCountdownTicker();
 }
 
@@ -2144,6 +2465,7 @@ function setupRealtimeOrdersListener() {
 }
 
 window.addEventListener('beforeunload', () => {
+  stopOrderPolling();
   if (activeOrdersChannel && supabase) {
     supabase.removeChannel(activeOrdersChannel);
     activeOrdersChannel = null;
@@ -2614,7 +2936,7 @@ function renderPosMenu() {
   grid.innerHTML = filtered.map(p => {
     const inCartQty = posCart[p.id]?.quantity || 0;
     return `
-      <div onclick="addToPosCart('${p.id}')" class="bg-slate-900 border border-slate-800 hover:border-primary/50 p-3 rounded-2xl cursor-pointer flex flex-col justify-between transition-all aspect-square relative group hover:shadow-lg">
+      <div id="pos-item-card-${p.id}" onclick="addToPosCart('${p.id}')" class="bg-slate-900 border border-slate-800 hover:border-primary/50 p-3 rounded-2xl cursor-pointer flex flex-col justify-between transition-all aspect-square relative group hover:shadow-lg">
         ${inCartQty > 0 ? `<span class="absolute top-2 right-2 bg-primary text-slate-900 text-[11px] font-black w-6 h-6 rounded-full flex items-center justify-center shadow-md animate-scale">${inCartQty}</span>` : ''}
         <div class="w-full h-20 rounded-xl overflow-hidden bg-slate-800 mb-2">
           <img src="${p.image_url || 'https://images.unsplash.com/photo-1546273031-28b72a64353b?w=150'}" alt="${p.name}" class="w-full h-full object-cover group-hover:scale-105 transition-transform">
@@ -2623,7 +2945,7 @@ function renderPosMenu() {
           <h4 class="font-bold text-xs text-slate-100 truncate">${p.name}</h4>
           <div class="flex items-center justify-between mt-1">
             <span class="text-sm font-black text-primary">₹${p.price.toFixed(2)}</span>
-            <span class="text-[10px] text-slate-400 font-mono bg-slate-800 px-1.5 py-0.5 rounded">(${p.stock_quantity})</span>
+            <span id="pos-stock-badge-${p.id}" class="text-[10px] text-slate-400 font-mono bg-slate-800 px-1.5 py-0.5 rounded">(${p.stock_quantity})</span>
           </div>
         </div>
       </div>
@@ -2753,10 +3075,31 @@ async function handlePosCheckout(paymentMode = 'CASH') {
       quantity: posCart[id].quantity
     }));
 
+    // Fetch the count of today's existing orders from Supabase for Daily Reset Token (#TK-101)
+    let ticketNumber = null;
+    if (typeof supabase !== 'undefined' && supabase) {
+      try {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+
+        const { count } = await supabase
+          .from('orders')
+          .select('*', { count: 'exact', head: true })
+          .gte('created_at', startOfToday.toISOString());
+
+        const dailySeq = (count || 0) + 101;
+        ticketNumber = `#TK-${dailySeq}`;
+      } catch (countErr) {
+        console.warn("Could not calculate daily ticket number in manager:", countErr);
+      }
+    }
+
     const res = await fetch('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        token_number: ticketNumber,
+        ticket_number: ticketNumber,
         order_type: 'POS',
         order_source: 'POS',
         is_pos: true,
@@ -2775,7 +3118,7 @@ async function handlePosCheckout(paymentMode = 'CASH') {
     }
 
     const newOrder = result.data;
-    const tokenNumber = newOrder.token_number || '#POS-000';
+    const tokenNumber = newOrder.token_number || ticketNumber || '#TK-101';
     const totalAmount = parseFloat(newOrder.total_amount || 0).toFixed(2);
 
     playBeep('success');
@@ -3210,4 +3553,12 @@ window.addEventListener("DOMContentLoaded", () => {
       }, 150);
     }
   });
+});
+
+// Memory safety: Clear all recurring polling intervals and timers on page unload
+window.addEventListener('beforeunload', () => {
+  stopOrderPolling();
+  stopQuickSellPolling();
+  stopInventoryPolling();
+  if (clockInterval) clearInterval(clockInterval);
 });

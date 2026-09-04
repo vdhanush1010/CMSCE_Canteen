@@ -94,9 +94,13 @@ BEGIN
     -- Fetch student's registration number
     SELECT reg_no INTO student_reg_no FROM students WHERE id = NEW.student_id;
     
-    -- Generate unique token (e.g., #TK-108)
-    token_num := '#TK-' || nextval('order_token_seq');
-    NEW.token_number := token_num;
+    -- Generate unique token (e.g., #TK-108) only if not already supplied by daily ticket generator
+    IF NEW.token_number IS NULL OR NEW.token_number = '' THEN
+        token_num := '#TK-' || nextval('order_token_seq');
+        NEW.token_number := token_num;
+    ELSE
+        token_num := NEW.token_number;
+    END IF;
 
     -- Build a JSON payload for qr_code_data
     NEW.qr_code_data := json_build_object(
