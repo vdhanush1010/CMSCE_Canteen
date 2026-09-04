@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Canteen Manager Login - CMSCE Canteen</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#10B981',
+            'primary-dark': '#059669',
+            darkbg: '#070D0B',
+            darksurface: '#111E19',
+            'darkcard-hover': '#162721',
+            'border-subtle': '#1E3A30',
+          },
+          fontFamily: {
+            poppins: ['Poppins', 'sans-serif'],
+            sans: ['Inter', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" href="manager.css">
+
+  <!-- Supabase JS Client SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+
+<body class="min-h-screen text-slate-100 flex flex-col justify-center items-center p-6 bg-[#070D0B]">
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="fixed inset-0 z-[2000] flex flex-col items-center justify-center hidden bg-slate-950/70 backdrop-blur-sm">
+    <div class="bg-darksurface border border-slate-700 p-6 rounded-2xl shadow-xl flex flex-col items-center gap-3">
+      <div class="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+      <p class="text-xs font-bold text-slate-100">Validating credentials...</p>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed top-5 right-5 z-[2500] flex flex-col gap-2"></div>
+
+  <!-- Manager Login Card -->
+  <div class="w-full max-w-sm bg-darksurface border border-slate-700 p-8 rounded-2xl shadow-2xl space-y-6">
+    <div class="text-center space-y-1">
+      <div class="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 text-primary mx-auto flex items-center justify-center mb-3">
+        <i data-lucide="shield-check" class="w-6 h-6"></i>
+      </div>
+      <h2 class="text-xl font-bold font-poppins text-slate-200">Canteen Manager Login</h2>
+      <p class="text-xs text-slate-400">Authorized logins only</p>
+    </div>
+
+    <!-- In-card error alert badge (Appears on invalid credentials without resetting inputs or obscuring card) -->
+    <div id="manager-login-error" class="hidden text-xs text-rose-300 bg-rose-950/70 border border-rose-800/80 rounded-xl px-3.5 py-2.5 flex items-center gap-2.5">
+      <i data-lucide="alert-circle" class="w-4 h-4 text-rose-400 shrink-0"></i>
+      <span id="manager-login-error-text" class="font-medium">Invalid Username or Password</span>
+    </div>
+
+    <form id="manager-login-form" class="space-y-4" onsubmit="handleManagerLogin(event)">
+      <div class="space-y-1">
+        <label for="managerUsername" class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">USERNAME</label>
+        <input type="text" id="managerUsername" name="managerUsername" placeholder="Enter username"
+          class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white transition-colors"
+          autocomplete="username" required>
+      </div>
+
+      <div class="space-y-1">
+        <label for="managerPassword" class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">PASSWORD</label>
+        <input type="password" id="managerPassword" name="managerPassword" placeholder="Enter password"
+          class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white transition-colors"
+          autocomplete="current-password" required>
+      </div>
+
+      <button type="submit" id="manager-login-btn"
+        class="w-full bg-primary hover:bg-primary-dark text-slate-900 font-bold py-2.5 rounded-xl transition-all text-xs flex items-center justify-center gap-2 shadow-lg active:scale-[0.99] mt-2">
+        <span>Login</span>
+      </button>
+
+      <div class="text-center pt-2">
+        <a href="index.html" class="text-slate-400 hover:text-slate-200 text-xs flex items-center justify-center gap-1.5 transition-colors">
+          <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
+          <span>Back to Student Portal</span>
+        </a>
+      </div>
+    </form>
+  </div>
+
+  <script src="canteen-login.js"></script>
+</body>
+
+</html>

@@ -103,7 +103,7 @@
         </a>
         <a href="#"
           class="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-background text-text-primary font-medium text-sm transition-colors"
-          onclick="showProfileScreen()">
+          onclick="toggleDrawer(false); showProfileScreen()">
           <i data-lucide="user" class="w-5 h-5 text-primary-dark"></i> Profile Details
         </a>
         <a href="#" id="drawer-my-orders-btn"
@@ -215,12 +215,13 @@
         </div>
         <div>
           <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Email Address <span
-              class="text-slate-400 lowercase font-normal">(Optional)</span></label>
+              class="text-rose-500 font-bold">*</span></label>
           <div class="relative">
             <i data-lucide="mail" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
-            <input type="email" id="reg-email" placeholder="e.g. student@college.edu"
+            <input type="email" id="reg-email" required placeholder="e.g. student@college.edu"
               class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
           </div>
+          <p id="reg-email-error" class="text-[11px] text-rose-500 mt-1 hidden"></p>
         </div>
         <div>
           <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Department <span
@@ -1115,7 +1116,7 @@
           </div>
           <div>
             <h3 class="font-bold text-sm leading-tight font-poppins">Reset Password</h3>
-            <p class="text-[10px] text-slate-400 font-medium">Mobile OTP Verification</p>
+            <p class="text-[10px] text-slate-400 font-medium">Supabase Auth OTP Recovery</p>
           </div>
         </div>
         <button onclick="closeForgotPasswordModal()"
@@ -1127,28 +1128,26 @@
       <!-- Steps Container -->
       <div class="p-6 space-y-4">
 
-        <!-- STEP 1: MOBILE NUMBER INPUT -->
+        <!-- STEP 1: EMAIL INPUT -->
         <div id="fp-step-1" class="space-y-4">
           <div class="text-center space-y-1">
             <div
               class="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center mx-auto text-primary-dark mb-2 border border-primary/20">
-              <i data-lucide="smartphone" class="w-6 h-6"></i>
+              <i data-lucide="mail" class="w-6 h-6"></i>
             </div>
             <h4 class="text-base font-bold font-poppins text-text-primary">Find Your Account</h4>
-            <p class="text-xs text-text-secondary">Enter your registered 10-digit mobile number to receive an
-              authentication OTP code.</p>
+            <p class="text-xs text-text-secondary">Enter your registered email address to receive a secure 6-digit recovery OTP code.</p>
           </div>
 
           <form onsubmit="handleSendOtpSubmit(event)" class="space-y-4 pt-2">
             <div>
-              <label class="block text-xs font-semibold text-text-secondary mb-1.5 uppercase">Registered Mobile
-                Number</label>
+              <label class="block text-xs font-semibold text-text-secondary mb-1.5 uppercase">Registered Email Address <span class="text-rose-500 font-bold">*</span></label>
               <div class="relative">
-                <span class="absolute left-3.5 top-3.5 text-xs font-bold text-slate-500">+91</span>
-                <input type="tel" id="fp-phone-input" required maxlength="10" placeholder="10-digit mobile number"
-                  oninput="this.value = this.value.replace(/\D/g, '')"
-                  class="w-full pl-12 pr-4 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white font-medium">
+                <i data-lucide="mail" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+                <input type="email" id="fp-email-input" required placeholder="e.g. student@college.edu"
+                  class="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white font-medium">
               </div>
+              <p id="fp-email-error" class="text-[11px] text-rose-500 mt-1 hidden"></p>
             </div>
 
             <button type="submit" id="fp-send-otp-btn" class="w-full btn-primary py-3">
@@ -1157,7 +1156,7 @@
           </form>
         </div>
 
-        <!-- STEP 2: OTP VERIFICATION -->
+        <!-- STEP 2: OTP VERIFICATION WITH 3-MINUTE TIMER -->
         <div id="fp-step-2" class="space-y-4 hidden">
           <div class="text-center space-y-1">
             <div
@@ -1165,34 +1164,45 @@
               <i data-lucide="shield-check" class="w-6 h-6"></i>
             </div>
             <h4 class="text-base font-bold font-poppins text-text-primary">Enter Verification Code</h4>
-            <p class="text-xs text-text-secondary">We sent a 6-digit OTP code to <strong id="fp-display-phone"
-                class="text-text-primary">+91 ----------</strong></p>
+            <p class="text-xs text-text-secondary">We sent a 6-digit recovery OTP to <strong id="fp-display-email"
+                class="text-text-primary">student@college.edu</strong></p>
           </div>
 
-          <!-- Sandbox Test Banner -->
-          <div id="fp-sandbox-otp-banner"
-            class="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-0.5 hidden">
-            <span class="text-[10px] uppercase font-bold text-emerald-800 tracking-wider">SMS OTP Code</span>
-            <p class="text-xs font-black font-mono text-emerald-900 tracking-widest" id="fp-sandbox-otp-code">------</p>
+          <!-- 3-Minute Active Countdown Box -->
+          <div id="fp-timer-box" class="p-3 bg-amber-50/80 border border-amber-200/80 rounded-xl flex items-center justify-between text-xs">
+            <span class="text-amber-800 font-medium flex items-center gap-1.5">
+              <i data-lucide="clock" class="w-4 h-4 text-amber-600"></i> Code valid for:
+            </span>
+            <span id="fp-countdown" class="font-bold font-mono text-sm text-amber-900 bg-white px-2.5 py-0.5 rounded-lg border border-amber-200 shadow-sm">03:00</span>
+          </div>
+
+          <!-- Expired Code Banner (Visible when timer hits 0:00) -->
+          <div id="fp-expired-banner"
+            class="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium text-center hidden flex items-center justify-center gap-2">
+            <i data-lucide="alert-circle" class="w-4 h-4 text-rose-500 flex-shrink-0"></i>
+            <span>OTP has expired. Please request a fresh OTP to continue.</span>
+          </div>
+
+          <!-- Inline Error Banner for OTP Verification (renders directly inside modal above inputs) -->
+          <div id="fp-otp-error"
+            class="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium hidden flex items-center gap-2">
+            <i data-lucide="alert-circle" class="w-4 h-4 text-rose-500 shrink-0"></i>
+            <span id="fp-otp-error-msg"></span>
           </div>
 
           <form onsubmit="handleVerifyOtpSubmit(event)" class="space-y-4">
             <div>
-              <label class="block text-xs font-semibold text-text-secondary mb-1.5 uppercase text-center">6-Digit
-                OTP</label>
+              <label class="block text-xs font-semibold text-text-secondary mb-1.5 uppercase text-center">6-Digit Verification Code</label>
               <input type="text" id="fp-otp-input" required maxlength="6" placeholder="000000"
-                oninput="this.value = this.value.replace(/\D/g, '')"
+                oninput="this.value = this.value.replace(/\D/g, ''); if (typeof hideFpOtpError === 'function') hideFpOtpError();"
                 class="w-full py-3 text-center text-xl font-bold tracking-widest font-mono rounded-xl border border-slate-200 focus:outline-none focus:border-primary transition-colors bg-white">
             </div>
 
-            <!-- Resend Timer -->
+            <!-- Resend / Actions -->
             <div class="flex items-center justify-between text-xs px-1">
-              <span id="fp-timer-text" class="text-slate-500 font-medium flex items-center gap-1">
-                <i data-lucide="clock" class="w-3.5 h-3.5"></i> Resend OTP in <span id="fp-countdown"
-                  class="font-bold">59s</span>
-              </span>
+              <span id="fp-timer-text" class="text-slate-500 font-medium">Need another code?</span>
               <button type="button" id="fp-resend-btn" onclick="handleResendOtp()"
-                class="font-bold text-primary hover:text-primary-dark disabled:text-slate-300 disabled:cursor-not-allowed"
+                class="font-bold text-primary hover:text-primary-dark disabled:text-slate-300 disabled:cursor-not-allowed transition-colors"
                 disabled>
                 Resend OTP
               </button>

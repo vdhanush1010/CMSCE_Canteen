@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Student Profile - CMSCE Canteen</title>
+  <meta name="description" content="View and manage your student profile details, contact information, and profile picture.">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: {
+              DEFAULT: '#FF6B00',
+              dark: '#E05A00',
+              light: '#FFF0E5'
+            },
+            text: {
+              primary: '#0F172A',
+              secondary: '#64748B'
+            }
+          },
+          fontFamily: {
+            poppins: ['Poppins', 'sans-serif'],
+            outfit: ['Outfit', 'sans-serif']
+          },
+          boxShadow: {
+            'premium': '0 10px 30px -5px rgba(0, 0, 0, 0.05), 0 20px 25px -5px rgba(0, 0, 0, 0.02)',
+            'subtle': '0 4px 12px rgba(0, 0, 0, 0.05)'
+          }
+        }
+      }
+    };
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Supabase JS -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body {
+      font-family: 'Outfit', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .modal-overlay {
+      background-color: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px);
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      opacity: 0;
+      z-index: 2000;
+    }
+
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+
+<body class="bg-slate-100 text-text-primary min-h-screen flex flex-col items-center justify-start">
+
+  <!-- Main Container -->
+  <div class="w-full max-w-md min-h-screen bg-white shadow-2xl flex flex-col relative overflow-hidden">
+
+    <!-- Header -->
+    <header class="px-6 pt-6 pb-4 bg-white/95 backdrop-blur-md flex items-center justify-between border-b border-slate-100 sticky top-0 z-30 flex-shrink-0">
+      <div class="flex items-center gap-3">
+        <a href="index.html"
+          class="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center transition-colors shadow-sm active:scale-95"
+          aria-label="Back to Canteen">
+          <i data-lucide="arrow-left" class="w-4 h-4"></i>
+        </a>
+        <div>
+          <h1 class="font-bold text-base text-text-primary font-poppins leading-tight">Student Profile</h1>
+          <p class="text-[10px] text-text-secondary">CMSCE Canteen Portal</p>
+        </div>
+      </div>
+      <span class="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
+      </span>
+    </header>
+
+    <!-- Scrollable Content -->
+    <main class="flex-1 overflow-y-auto p-6 space-y-6">
+
+      <!-- Interactive Avatar Area -->
+      <section class="flex flex-col items-center space-y-3 pt-2">
+        <div class="relative group">
+          <div id="profile-avatar-container"
+            class="w-24 h-24 rounded-full bg-primary-light border-4 border-white shadow-premium flex items-center justify-center font-bold text-3xl text-primary-dark overflow-hidden cursor-pointer transition-transform group-hover:scale-105"
+            onclick="document.getElementById('profile-upload').click()">
+            <span class="text-slate-400 text-2xl font-bold">U</span>
+          </div>
+          <button type="button" onclick="document.getElementById('profile-upload').click()"
+            class="absolute bottom-0 right-0 bg-primary hover:bg-primary-dark text-white p-2.5 rounded-full shadow-subtle cursor-pointer active:scale-90 transition-all border-2 border-white"
+            title="Upload new profile picture"
+            aria-label="Upload photo">
+            <i data-lucide="camera" class="w-4 h-4"></i>
+          </button>
+          <input type="file" id="profile-upload" accept="image/png,image/jpeg,image/webp" class="hidden" onchange="handleAvatarUpload(event)">
+        </div>
+        <div class="text-center">
+          <p class="text-xs font-semibold text-slate-600">Profile Photo</p>
+          <p class="text-[11px] text-text-secondary">Tap camera icon to upload (Max 2MB, PNG/JPEG/WEBP)</p>
+        </div>
+      </section>
+
+      <!-- Account Info Cards -->
+      <section class="space-y-4">
+        <div class="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm space-y-3.5">
+          <!-- Full Name -->
+          <div class="border-b border-slate-100 pb-2.5 flex justify-between items-center">
+            <span class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Full Name</span>
+            <span class="text-sm font-bold text-text-primary text-right" id="profile-name">Loading...</span>
+          </div>
+
+          <!-- Register Number -->
+          <div class="border-b border-slate-100 pb-2.5 flex justify-between items-center">
+            <span class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Register Number</span>
+            <span class="text-sm font-bold font-mono text-text-primary text-right" id="profile-reg">-</span>
+          </div>
+
+          <!-- Mobile Number -->
+          <div class="border-b border-slate-100 pb-2.5 flex justify-between items-center">
+            <span class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Mobile Number</span>
+            <span class="text-sm font-bold text-emerald-600 flex items-center gap-1.5" id="profile-phone">
+              <i data-lucide="phone" class="w-3.5 h-3.5"></i> <span>-</span>
+            </span>
+          </div>
+
+          <!-- Email Address -->
+          <div class="border-b border-slate-100 pb-2.5 flex justify-between items-center">
+            <span class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Email Address</span>
+            <span class="text-sm font-bold text-text-primary text-right" id="profile-email">Not provided</span>
+          </div>
+
+          <!-- Department -->
+          <div class="border-b border-slate-100 pb-2.5 flex justify-between items-center">
+            <span class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Department</span>
+            <span class="text-sm font-bold text-text-primary text-right" id="profile-dept">-</span>
+          </div>
+
+          <!-- Date of Birth -->
+          <div class="flex justify-between items-center">
+            <span class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Date of Birth</span>
+            <span class="text-sm font-bold text-text-primary text-right" id="profile-dob">-</span>
+          </div>
+        </div>
+
+        <!-- Edit Profile Action Button -->
+        <button type="button" onclick="openEditProfileModal()"
+          class="w-full py-3.5 px-4 bg-slate-900 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm hover:bg-slate-800 transition-all active:scale-[0.99]">
+          <i data-lucide="edit-3" class="w-4 h-4 text-primary"></i>
+          <span>Edit Profile Details</span>
+        </button>
+
+        <!-- Back to Ordering -->
+        <a href="index.html"
+          class="w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition-all">
+          <i data-lucide="shopping-bag" class="w-4 h-4"></i>
+          <span>Return to Canteen Menu</span>
+        </a>
+      </section>
+
+    </main>
+
+  </div>
+
+  <!-- ==================== EDIT PROFILE MODAL ==================== -->
+  <div id="edit-profile-modal"
+    class="fixed inset-0 z-[1700] flex items-center justify-center modal-overlay hidden px-4">
+    <div
+      class="bg-white border border-slate-200 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden relative flex flex-col animate-in fade-in zoom-in-95 duration-200">
+
+      <!-- Modal Header -->
+      <div
+        class="px-6 py-4 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white flex items-center justify-between shadow-sm">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary">
+            <i data-lucide="user-cog" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-sm leading-tight font-poppins">Edit Student Profile</h3>
+            <p class="text-[10px] text-slate-400 font-medium">Update contact info and department</p>
+          </div>
+        </div>
+        <button type="button" onclick="closeEditProfileModal()"
+          class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors text-slate-300 hover:text-white"
+          aria-label="Close modal">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Modal Body / Form -->
+      <form onsubmit="handleEditProfileSubmit(event)" class="p-6 space-y-4">
+        <!-- Readonly Register Number -->
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Register Number</label>
+          <div class="relative">
+            <i data-lucide="hash" class="w-4 h-4 absolute left-3.5 top-3 text-slate-400"></i>
+            <input type="text" id="edit-profile-reg" readonly disabled
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm bg-slate-100 text-slate-500 font-mono font-bold cursor-not-allowed">
+          </div>
+          <p class="text-[10px] text-slate-400 mt-1">Register number is your permanent academic ID and cannot be changed.</p>
+        </div>
+
+        <!-- Full Name -->
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Full Name <span class="text-rose-500 font-bold">*</span></label>
+          <div class="relative">
+            <i data-lucide="user" class="w-4 h-4 absolute left-3.5 top-3 text-slate-400"></i>
+            <input type="text" id="edit-profile-name" required placeholder="Your full name"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+
+        <!-- Mobile Number -->
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Mobile Number <span class="text-rose-500 font-bold">* (Strict 10 Digits)</span></label>
+          <div class="relative">
+            <i data-lucide="phone" class="w-4 h-4 absolute left-3.5 top-3 text-slate-400"></i>
+            <input type="tel" id="edit-profile-phone" required maxlength="10" placeholder="10-digit mobile number"
+              oninput="this.value = this.value.replace(/\D/g, '')"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+
+        <!-- Email Address -->
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Email Address <span class="text-slate-400 lowercase font-normal">(Optional)</span></label>
+          <div class="relative">
+            <i data-lucide="mail" class="w-4 h-4 absolute left-3.5 top-3 text-slate-400"></i>
+            <input type="email" id="edit-profile-email" placeholder="e.g. student@college.edu"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+
+        <!-- Department -->
+        <div>
+          <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase">Department <span class="text-rose-500 font-bold">*</span></label>
+          <div class="relative">
+            <i data-lucide="graduation-cap" class="w-4 h-4 absolute left-3.5 top-3 text-slate-400"></i>
+            <input type="text" id="edit-profile-dept" required placeholder="e.g. Computer Science"
+              class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex items-center gap-3 pt-2">
+          <button type="button" onclick="closeEditProfileModal()"
+            class="flex-1 py-2.5 px-4 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold transition-colors">
+            Cancel
+          </button>
+          <button type="submit" id="edit-profile-submit-btn"
+            class="flex-1 bg-primary hover:bg-primary-dark text-white rounded-xl py-2.5 px-4 text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors">
+            <i data-lucide="check" class="w-4 h-4"></i>
+            <span>Save Changes</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast" class="toast flex items-center gap-2 px-4 py-3 rounded-2xl shadow-xl border text-xs font-semibold text-white bg-slate-900 border-slate-800">
+    <span id="toast-icon"></span>
+    <span id="toast-message">Notification message</span>
+  </div>
+
+  <!-- Supabase Configuration & Toast helper -->
+  <script>
+    const SUPABASE_URL = 'https://llbegpqowjvsadbundrn.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxsYmVncHFvd2p2c2FkYnVuZHJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3Njg4NzAsImV4cCI6MjEwMjM0NDg3MH0.SGoLEoE5PP_Ex0C7tOXrwvcol2vxxOvOFPoSGfD93VA';
+    const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+    function showToast(msg, type = 'info') {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toast-message');
+      const toastIcon = document.getElementById('toast-icon');
+      if (!toast || !toastMsg) return;
+
+      toastMsg.innerText = msg;
+      if (type === 'error') {
+        toast.className = 'toast flex items-center gap-2 px-4 py-3 rounded-2xl shadow-xl border text-xs font-semibold text-white bg-rose-900 border-rose-800 show';
+        toastIcon.innerHTML = '<i data-lucide="alert-circle" class="w-4 h-4 text-rose-300"></i>';
+      } else if (type === 'success') {
+        toast.className = 'toast flex items-center gap-2 px-4 py-3 rounded-2xl shadow-xl border text-xs font-semibold text-white bg-emerald-900 border-emerald-800 show';
+        toastIcon.innerHTML = '<i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-300"></i>';
+      } else {
+        toast.className = 'toast flex items-center gap-2 px-4 py-3 rounded-2xl shadow-xl border text-xs font-semibold text-white bg-slate-900 border-slate-800 show';
+        toastIcon.innerHTML = '<i data-lucide="info" class="w-4 h-4 text-primary"></i>';
+      }
+      if (window.lucide) lucide.createIcons();
+
+      clearTimeout(window.toastTimer);
+      window.toastTimer = setTimeout(() => {
+        toast.classList.remove('show');
+      }, 3500);
+    }
+  </script>
+
+  <!-- Profile Module Script -->
+  <script src="profile.js"></script>
+</body>
+
+</html>

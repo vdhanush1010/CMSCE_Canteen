@@ -177,11 +177,39 @@ async function initDatabase() {
   if (storedStudent) {
     currentStudent = JSON.parse(storedStudent);
     try {
+      if (currentStudent && currentStudent.id && typeof supabase !== 'undefined') {
+        const { data: dbStudent, error: dbErr } = await supabase
+          .from('students')
+          .select('*')
+          .eq('id', currentStudent.id)
+          .maybeSingle();
+
+        if (!dbErr && dbStudent) {
+          const resolvedPhone = dbStudent.phone || dbStudent.phone_number || currentStudent.phone || currentStudent.phone_number || '';
+          const resolvedEmail = dbStudent.email || currentStudent.email || '';
+          currentStudent = {
+            ...currentStudent,
+            ...dbStudent,
+            phone: resolvedPhone,
+            phone_number: resolvedPhone,
+            email: resolvedEmail
+          };
+          sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+        }
+      }
+    } catch (dbErr) {
+      console.warn("Direct Supabase profile refresh notice:", dbErr);
+    }
+    try {
       if (currentStudent && currentStudent.id) {
         const res = await fetch('/api/auth?id=' + encodeURIComponent(currentStudent.id));
         const result = await res.json();
         if (result.success && result.data) {
-          currentStudent = result.data;
+          currentStudent = { ...currentStudent, ...result.data };
+          if (!currentStudent.avatar_url) {
+            const scopedAvatar = localStorage.getItem("student_avatar_" + currentStudent.id);
+            if (scopedAvatar) currentStudent.avatar_url = scopedAvatar;
+          }
           sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
         }
       }
@@ -419,44 +447,59 @@ function toggleDrawer(open) {
   }
 }
 
+function renderStudentAvatar(container, student, sizeClasses = "w-full h-full") {
+  if (!container) return;
+  const avatarUrl = (student && student.avatar_url) || (student && student.id && localStorage.getItem("student_avatar_" + student.id));
+  if (avatarUrl) {
+    container.innerHTML = `<img src="${avatarUrl}" alt="${(student && student.name) || 'Student'}" class="${sizeClasses} object-cover rounded-full">`;
+  } else {
+    const initial = (student && student.name) ? student.name.trim().charAt(0).toUpperCase() : 'U';
+    container.innerHTML = `<span class="font-bold text-slate-800 text-lg select-none">${initial}</span>`;
+  }
+}
+
 function updateDrawerInfo() {
   if (!currentStudent) return;
-  document.getElementById("drawer-student-name").innerText = currentStudent.name;
-  document.getElementById("drawer-student-reg").innerText = currentStudent.reg_no;
+  const nameEl = document.getElementById("drawer-student-name");
+  if (nameEl) nameEl.innerText = currentStudent.name || '';
+  const regEl = document.getElementById("drawer-student-reg");
+  if (regEl) regEl.innerText = currentStudent.reg_no || '';
   
   const avatarEl = document.getElementById("drawer-avatar");
   if (avatarEl) {
-    const savedAvatar = localStorage.getItem("student_avatar");
-    if (savedAvatar) {
-      avatarEl.innerHTML = `<img src="${savedAvatar}" class="w-full h-full object-cover">`;
-    } else {
-      avatarEl.innerText = currentStudent.name.charAt(0).toUpperCase();
-    }
+    renderStudentAvatar(avatarEl, currentStudent, "w-full h-full");
   }
 }
 
 function showProfileScreen() {
   if (!currentStudent) return;
   
-  document.getElementById("profile-name").innerText = currentStudent.name || '-';
-  document.getElementById("profile-reg").innerText = currentStudent.reg_no || '-';
-  document.getElementById("profile-dept").innerText = currentStudent.department || '-';
-  document.getElementById("profile-dob").innerText = currentStudent.dob || '-';
+  const nameEl = document.getElementById("profile-name");
+  if (nameEl) nameEl.innerText = currentStudent.name || '-';
+  const regEl = document.getElementById("profile-reg");
+  if (regEl) regEl.innerText = currentStudent.reg_no || '-';
+  const deptEl = document.getElementById("profile-dept");
+  if (deptEl) deptEl.innerText = currentStudent.department || '-';
+  const dobEl = document.getElementById("profile-dob");
+  if (dobEl) dobEl.innerText = currentStudent.dob || '-';
   
-  // Registered Mobile Number
+  // Registered Mobile Number - strictly map to phone (fallback phone_number)
   const phoneEl = document.getElementById("profile-phone");
   if (phoneEl) {
-    const rawPhone = currentStudent.phone_number || '';
+    const rawPhone = (currentStudent.phone || currentStudent.phone_number) 
+      ? String(currentStudent.phone || currentStudent.phone_number).trim() 
+      : '';
     phoneEl.innerHTML = rawPhone 
       ? `<i data-lucide="phone" class="w-3.5 h-3.5 text-emerald-600"></i> <span>+91 ${rawPhone}</span>` 
       : `<span class="text-slate-400 font-normal italic">Not provided</span>`;
   }
 
-  // Email Address
+  // Email Address - strictly map to email
   const emailEl = document.getElementById("profile-email");
   if (emailEl) {
-    emailEl.innerText = currentStudent.email ? currentStudent.email : "Not provided";
-    if (!currentStudent.email) {
+    const rawEmail = currentStudent.email ? String(currentStudent.email).trim() : '';
+    emailEl.innerText = rawEmail ? rawEmail : "Not provided";
+    if (!rawEmail) {
       emailEl.className = "text-sm text-slate-400 font-normal italic";
     } else {
       emailEl.className = "text-sm font-bold text-text-primary";
@@ -465,16 +508,11 @@ function showProfileScreen() {
   
   const container = document.getElementById("profile-avatar-container");
   if (container) {
-    const savedAvatar = localStorage.getItem("student_avatar");
-    if (savedAvatar) {
-      container.innerHTML = `<img src="${savedAvatar}" class="w-full h-full object-cover">`;
-    } else {
-      container.innerText = currentStudent.name ? currentStudent.name.charAt(0).toUpperCase() : 'U';
-    }
+    renderStudentAvatar(container, currentStudent, "w-full h-full");
   }
   
   router.navigateTo("profile-screen");
-  lucide.createIcons();
+  if (window.lucide) lucide.createIcons();
 }
 
 // ─────────────────────────────────────────────────────────
@@ -497,7 +535,7 @@ function openEditProfileModal() {
 
   if (nameInput)  nameInput.value = currentStudent.name || '';
   if (regInput)   regInput.value = currentStudent.reg_no || '';
-  if (phoneInput) phoneInput.value = currentStudent.phone_number || '';
+  if (phoneInput) phoneInput.value = currentStudent.phone || currentStudent.phone_number || '';
   if (emailInput) emailInput.value = currentStudent.email || '';
   if (deptInput)  deptInput.value = currentStudent.department || '';
 
@@ -550,105 +588,227 @@ async function handleEditProfileSubmit(event) {
 
   try {
     const updatePayload = {
-      name,
+      phone: phone,
+      email: email || null,
       department: dept,
-      phone_number: phone,
-      email: email || null
+      name: name
     };
 
-    let updatedStudent = null;
-    let updateErr = null;
+    let updateSuccessful = false;
 
-    // Attempt 1: Full update with email and phone_number
-    const res1 = await supabase
-      .from('students')
-      .update(updatePayload)
-      .eq('id', currentStudent.id)
-      .select()
-      .single();
+    // Direct Supabase update targeted at authenticated student's unique primary key
+    if (typeof supabase !== 'undefined') {
+      try {
+        let { data, error } = await supabase
+          .from('students')
+          .update(updatePayload)
+          .eq('id', currentStudent.id)
+          .select()
+          .single();
 
-    if (!res1.error && res1.data) {
-      updatedStudent = res1.data;
-    } else if (res1.error && (res1.error.message.includes("schema cache") || res1.error.message.includes("column") || res1.error.code === 'PGRST204')) {
-      // Attempt 2: Fallback if email / phone_number columns are not yet in Supabase
-      console.warn("Retrying profile update with core columns:", res1.error.message);
-      const res2 = await supabase
-        .from('students')
-        .update({ name, department: dept })
-        .eq('id', currentStudent.id)
-        .select()
-        .single();
-
-      if (!res2.error && res2.data) {
-        updatedStudent = res2.data;
-      } else {
-        updateErr = res2.error;
+        if (!error && data) {
+          updateSuccessful = true;
+        } else {
+          console.warn("Direct Supabase update with 'phone' column note:", error ? error.message : "No data");
+          // Fallback update if table uses 'phone_number'
+          const fbRes = await supabase
+            .from('students')
+            .update({
+              phone_number: phone,
+              email: email || null,
+              department: dept,
+              name: name
+            })
+            .eq('id', currentStudent.id)
+            .select()
+            .single();
+          if (!fbRes.error) updateSuccessful = true;
+        }
+      } catch (dbErr) {
+        console.warn("Direct database update caught exception:", dbErr.message);
       }
-    } else {
-      updateErr = res1.error;
     }
 
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> <span>Save Changes</span>`;
+    // Also update auth user metadata if active
+    if (typeof supabase !== 'undefined' && supabase.auth) {
+      try {
+        await supabase.auth.updateUser({
+          data: { phone: phone, name: name }
+        });
+      } catch (e) {}
     }
 
-    if (updateErr || !updatedStudent) {
-      showToast("Failed to update profile: " + (updateErr ? updateErr.message : "Unknown error"), "error");
+    // Secondary persistence via backend API
+    try {
+      const apiRes = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'update-profile',
+          id: currentStudent.id,
+          phone: phone,
+          phone_number: phone,
+          email: email || '',
+          department: dept,
+          name: name
+        })
+      });
+      const apiResult = await apiRes.json();
+      if (apiResult.success) {
+        updateSuccessful = true;
+      }
+    } catch (apiErr) {
+      console.warn("Backend auth sync warning:", apiErr);
+    }
+
+    if (!updateSuccessful && typeof supabase !== 'undefined') {
+      showToast("Failed to update profile. Please check database permissions.", "error");
       return;
     }
 
-    // Immediately update local state without requiring a hard reload
+    // Refresh active session state immediately
     currentStudent = {
       ...currentStudent,
-      name: updatedStudent.name || name,
-      department: updatedStudent.department || dept,
+      name,
+      department: dept,
+      phone: phone,
       phone_number: phone,
       email: email || ''
     };
     sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
 
-    // Refresh UI immediately
+    // Refresh UI immediately without requiring manual reloads
     showProfileScreen();
     updateDrawerInfo();
-
     closeEditProfileModal();
     showToast("Profile updated successfully!", "success");
   } catch (err) {
+    console.error("Error updating profile:", err);
+    showToast("Error saving profile: " + (err.message || "Unknown error"), "error");
+  } finally {
     if (submitBtn) {
       submitBtn.disabled = false;
       submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> <span>Save Changes</span>`;
+      if (window.lucide) lucide.createIcons();
     }
-    console.error("Error updating profile:", err);
-    showToast("Network error while updating profile", "error");
   }
 }
 
-function handleAvatarUpload(event) {
-  const file = event.target.files[0];
+async function handleAvatarUpload(event) {
+  const file = event.target.files && event.target.files[0];
   if (!file) return;
 
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    const base64Img = e.target.result;
-    
-    localStorage.setItem("student_avatar", base64Img);
-    currentStudent.avatar = base64Img;
-    sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
-    
-    const profileContainer = document.getElementById("profile-avatar-container");
-    if (profileContainer) {
-      profileContainer.innerHTML = `<img src="${base64Img}" class="w-full h-full object-cover">`;
+  if (!currentStudent || !currentStudent.id) {
+    showToast("Session expired. Please log in again.", "error");
+    return;
+  }
+
+  // File type validation: PNG, JPEG, WEBP
+  const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+  if (!allowedTypes.includes(file.type.toLowerCase())) {
+    showToast("Invalid format. Please upload a PNG, JPEG, or WEBP image.", "error");
+    event.target.value = '';
+    return;
+  }
+
+  // File size validation: max 2MB
+  const MAX_SIZE = 2 * 1024 * 1024; // 2MB
+  if (file.size > MAX_SIZE) {
+    showToast("Image size exceeds 2MB limit. Please choose a smaller image.", "error");
+    event.target.value = '';
+    return;
+  }
+
+  // Visual loading feedback
+  const profileContainer = document.getElementById("profile-avatar-container");
+  if (profileContainer) {
+    profileContainer.innerHTML = `<div class="w-full h-full flex items-center justify-center bg-slate-100 rounded-full"><span class="animate-spin inline-block w-6 h-6 border-2 border-primary border-t-transparent rounded-full"></span></div>`;
+  }
+
+  try {
+    const fileExt = file.name.split('.').pop() || 'png';
+    // Strictly scope storage path to authenticated student's ID and timestamp
+    const storagePath = `avatars/${currentStudent.id}_${Date.now()}.${fileExt}`;
+
+    let publicUrl = null;
+
+    // 1. Attempt upload to Supabase Storage bucket 'avatars'
+    try {
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(storagePath, file, { cacheControl: '3600', upsert: true });
+
+      if (!uploadError && uploadData) {
+        const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(storagePath);
+        if (urlData && urlData.publicUrl) {
+          publicUrl = urlData.publicUrl;
+        }
+      } else if (uploadError) {
+        console.warn("Supabase storage upload error:", uploadError.message);
+      }
+    } catch (sErr) {
+      console.warn("Storage upload exception:", sErr);
     }
-    
+
+    // 2. Fallback to scoped Data URL if Supabase Storage bucket is unavailable
+    if (!publicUrl) {
+      publicUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // 3. Persist public URL to students.avatar_url targeting current student ID
+    try {
+      const { error: dbErr } = await supabase
+        .from('students')
+        .update({ avatar_url: publicUrl })
+        .eq('id', currentStudent.id);
+      if (dbErr) console.warn("Supabase avatar_url update note:", dbErr.message);
+    } catch (e) {}
+
+    // 4. Persist to server extended profile and scoped local storage
+    try {
+      await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'update-avatar',
+          id: currentStudent.id,
+          avatar_url: publicUrl
+        })
+      });
+    } catch (e) {}
+
+    // Isolated per-student storage key (never global)
+    localStorage.setItem("student_avatar_" + currentStudent.id, publicUrl);
+
+    // 5. Update active session state
+    currentStudent.avatar_url = publicUrl;
+    sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
+
+    // 6. Update UI immediately without requiring a page reload
+    if (profileContainer) {
+      renderStudentAvatar(profileContainer, currentStudent);
+    }
     const drawerAvatar = document.getElementById("drawer-avatar");
     if (drawerAvatar) {
-      drawerAvatar.innerHTML = `<img src="${base64Img}" class="w-full h-full object-cover">`;
+      renderStudentAvatar(drawerAvatar, currentStudent);
     }
-    
-    showToast("Profile picture uploaded successfully!", "success");
-  };
-  reader.readAsDataURL(file);
+
+    showToast("Profile picture updated successfully!", "success");
+  } catch (err) {
+    console.error("Avatar upload error:", err);
+    showToast("Failed to upload avatar: " + (err.message || "Unknown error"), "error");
+    if (profileContainer) {
+      renderStudentAvatar(profileContainer, currentStudent);
+    }
+  } finally {
+    event.target.value = '';
+    if (window.lucide) lucide.createIcons();
+  }
 }
 
 // 7. Student Auth System
@@ -682,7 +842,50 @@ async function handleLoginSubmit(event) {
     }
 
     const { password_hash, ...studentSafe } = student;
-    currentStudent = studentSafe;
+    const resolvedPhone = student.phone || student.phone_number || '';
+    const resolvedEmail = student.email || '';
+    currentStudent = {
+      ...studentSafe,
+      phone: resolvedPhone,
+      phone_number: resolvedPhone,
+      email: resolvedEmail
+    };
+
+    // If Supabase Auth is active, check if user.email or user_metadata.phone can fill missing fields
+    if (typeof supabase !== 'undefined' && supabase.auth) {
+      try {
+        const { data: authUserData } = await supabase.auth.getUser();
+        const u = authUserData?.user;
+        if (u && u.id === currentStudent.id) {
+          const authEmail = u.email || '';
+          const authPhone = u.user_metadata?.phone || u.user_metadata?.phone_number || u.phone || '';
+          if (!currentStudent.email && authEmail) {
+            currentStudent.email = authEmail;
+            supabase.from('students').update({ email: authEmail }).eq('id', currentStudent.id).catch(() => {});
+          }
+          if (!currentStudent.phone && authPhone) {
+            currentStudent.phone = authPhone;
+            currentStudent.phone_number = authPhone;
+            supabase.from('students').update({ phone: authPhone }).eq('id', currentStudent.id).catch(() => {});
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Sync extended profile attributes (phone, email, avatar)
+    try {
+      const authRes = await fetch('/api/auth?id=' + encodeURIComponent(student.id));
+      const authData = await authRes.json();
+      if (authData.success && authData.data) {
+        currentStudent = { ...currentStudent, ...authData.data };
+      }
+    } catch (e) {}
+
+    if (!currentStudent.avatar_url) {
+      const localScoped = localStorage.getItem("student_avatar_" + currentStudent.id);
+      if (localScoped) currentStudent.avatar_url = localScoped;
+    }
+
     sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
     updateDrawerInfo();
     setupRealtimeListener();
@@ -710,13 +913,36 @@ async function handleRegisterSubmit(event) {
   const dob = document.getElementById("reg-dob").value;
   const password = document.getElementById("reg-password").value;
 
+  const emailErrorEl = document.getElementById("reg-email-error");
+  if (emailErrorEl) {
+    emailErrorEl.innerText = "";
+    emailErrorEl.classList.add("hidden");
+  }
+
   if (phone.length !== 10) {
     showToast("Mobile number must be exactly 10 digits", "error");
     return;
   }
 
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  // Enforce strictly mandatory email address
+  if (!email) {
+    if (emailErrorEl) {
+      emailErrorEl.innerText = "Email address is required and cannot be left blank.";
+      emailErrorEl.classList.remove("hidden");
+    }
+    showToast("Email address is strictly mandatory", "error");
+    document.getElementById("reg-email")?.focus();
+    return;
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    if (emailErrorEl) {
+      emailErrorEl.innerText = "Please enter a valid email address (e.g. student@college.edu).";
+      emailErrorEl.classList.remove("hidden");
+    }
     showToast("Please enter a valid email address", "error");
+    document.getElementById("reg-email")?.focus();
     return;
   }
 
@@ -739,81 +965,142 @@ async function handleRegisterSubmit(event) {
       return;
     }
 
-    // Safely check phone uniqueness if column exists
-    try {
-      const { data: existingPhone } = await supabase
-        .from('students')
-        .select('id')
-        .eq('phone_number', phone)
-        .maybeSingle();
-
-      if (existingPhone) {
-        showLoading(false);
-        showToast("Phone number already registered", "error");
-        return;
-      }
-    } catch (phoneCheckErr) {
-      // Column phone_number may not exist yet in schema cache; continue safely
+    // 1. Trigger Supabase Auth Sign Up FIRST
+    if (!supabase || !supabase.auth) {
+      throw new Error("Supabase client is not initialized.");
     }
 
-    // Base schema-compliant payload matching existing Supabase columns
-    const baseStudent = {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPhone = phone.trim();
+    const cleanName = name.trim();
+
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password: password,
+      options: {
+        data: {
+          phone: cleanPhone,
+          name: cleanName,
+          phone_number: cleanPhone,
+          reg_no: regNo,
+          department: dept,
+          dob: dob
+        }
+      }
+    });
+
+    if (authError) {
+      showLoading(false);
+      const msg = authError.message || "";
+      if (msg.toLowerCase().includes("already registered") || authError.status === 400 || authError.code === "user_already_exists") {
+        if (emailErrorEl) {
+          emailErrorEl.innerText = "This email is already registered in Supabase Authentication.";
+          emailErrorEl.classList.remove("hidden");
+        }
+        showToast("This email is already registered. Please log in or reset your password.", "error");
+        return;
+      }
+      if (authError.status === 429 || authError.code === "over_email_send_rate_limit") {
+        showToast("Email send rate limit reached. Please wait a moment before trying again.", "error");
+        return;
+      }
+      throw authError;
+    }
+
+    if (authData?.user && Array.isArray(authData.user.identities) && authData.user.identities.length === 0) {
+      showLoading(false);
+      if (emailErrorEl) {
+        emailErrorEl.innerText = "This email is already registered in Supabase Authentication.";
+        emailErrorEl.classList.remove("hidden");
+      }
+      showToast("This email is already registered. Please log in or reset your password.", "error");
+      return;
+    }
+
+    const authUid = authData?.user?.id;
+    if (!authUid) {
+      throw new Error("Unable to retrieve Supabase Auth UID for new student.");
+    }
+
+    // 2. Link Auth UID to Student Profile & Upsert directly into public.students
+    const studentRecord = {
+      id: authUid,
+      email: cleanEmail,
+      phone: cleanPhone,
+      name: cleanName,
       reg_no: regNo,
-      name,
       department: dept,
-      dob,
+      dob: dob,
       password_hash: password,
       wallet_balance: 0.00
     };
 
-    let newStudent = null;
-    let insertErr = null;
-
-    // Attempt 1: Try inserting with email and phone_number if schema supports it
-    const fullPayload = {
-      ...baseStudent,
-      email: email || null,
-      phone_number: phone || null
-    };
-
-    const res1 = await supabase
+    let { error: insertErr } = await supabase
       .from('students')
-      .insert([fullPayload])
-      .select()
-      .single();
+      .upsert(studentRecord, { onConflict: 'id' });
 
-    if (!res1.error && res1.data) {
-      newStudent = res1.data;
-    } else if (res1.error && (res1.error.message.includes("schema cache") || res1.error.message.includes("column") || res1.error.code === 'PGRST204')) {
-      // Attempt 2: Fallback to existing schema without unmapped email / phone_number columns
-      console.warn("Retrying registration with schema-aligned attributes:", res1.error.message);
-      const res2 = await supabase
-        .from('students')
-        .insert([baseStudent])
-        .select()
-        .single();
-
-      if (!res2.error && res2.data) {
-        newStudent = res2.data;
-      } else {
-        insertErr = res2.error;
-      }
-    } else {
-      insertErr = res1.error;
+    if (insertErr && (insertErr.code === 'PGRST204' || insertErr.message.includes('column'))) {
+      console.warn("Retrying with alternate column mapping:", insertErr.message);
+      const fallbackRecord = {
+        id: authUid,
+        email: cleanEmail,
+        phone_number: cleanPhone,
+        name: cleanName,
+        reg_no: regNo,
+        department: dept,
+        dob: dob,
+        password_hash: password,
+        wallet_balance: 0.00
+      };
+      const retry = await supabase.from('students').upsert(fallbackRecord, { onConflict: 'id' });
+      insertErr = retry.error;
     }
 
     showLoading(false);
 
-    if (insertErr || !newStudent) {
-      showToast("Registration failed: " + (insertErr ? insertErr.message : "Unknown error"), "error");
+    if (insertErr) {
+      console.error("Database sync error:", insertErr);
+      if (insertErr.code === '23505') {
+        showToast("A student with this Register Number or ID already exists", "error");
+        return;
+      }
+      showToast("Registration failed: " + insertErr.message, "error");
       return;
     }
 
-    const { password_hash, ...studentSafe } = newStudent;
+    const newStudent = {
+      ...studentRecord,
+      phone_number: cleanPhone
+    };
+
+    // 3. Synchronize with extended backend profiles using the Auth UID
+    try {
+      await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'student-register',
+          id: authUid,
+          reg_no: regNo,
+          name,
+          department: dept,
+          dob,
+          password,
+          phone_number: phone,
+          email
+        })
+      });
+    } catch (apiErr) {}
+
     currentStudent = {
-      ...studentSafe,
-      phone_number: phone || studentSafe.phone_number || '',
-      email: email || studentSafe.email || ''
+      id: authUid,
+      reg_no: regNo,
+      name,
+      department: dept,
+      dob,
+      phone_number: phone,
+      email,
+      wallet_balance: 0.00
     };
     sessionStorage.setItem("session_student", JSON.stringify(currentStudent));
 
@@ -873,32 +1160,33 @@ function switchAuthTab(tab) {
 }
 
 // ----------------------------------------------------
-// 7b. Mobile Number-Only "Forgot Password" OTP Flow
+// 7b. Supabase Auth OTP "Forgot Password" Flow (3-Minute Validity)
 // ----------------------------------------------------
-let fpCurrentPhone = "";
-let fpCurrentOtp = "";
-let fpCurrentStudentId = null;
+let fpCurrentEmail = "";
 let fpTimerInterval = null;
-let fpResendCountdown = 30;
+let fpRemainingSeconds = 180; // 3 minutes = 180 seconds
 
-function openForgotPasswordModal() {
+function openForgotPasswordModal(event) {
+  if (event) event.preventDefault();
   const modal = document.getElementById("forgot-password-modal");
   if (modal) modal.classList.remove("hidden");
   goToFpStep(1);
-  const phoneInput = document.getElementById("fp-phone-input");
-  if (phoneInput) {
-    phoneInput.value = "";
-    setTimeout(() => phoneInput.focus(), 100);
+  const emailInput = document.getElementById("fp-email-input");
+  const emailError = document.getElementById("fp-email-error");
+  if (emailError) emailError.classList.add("hidden");
+  if (emailInput) {
+    emailInput.value = "";
+    setTimeout(() => emailInput.focus(), 100);
   }
+  if (window.lucide) lucide.createIcons();
 }
 
 function closeForgotPasswordModal() {
   const modal = document.getElementById("forgot-password-modal");
   if (modal) modal.classList.add("hidden");
-  if (fpTimerInterval) clearInterval(fpTimerInterval);
-  fpCurrentPhone = "";
-  fpCurrentOtp = "";
-  fpCurrentStudentId = null;
+  stopFpTimer();
+  fpCurrentEmail = "";
+  fpRemainingSeconds = 180;
 }
 
 function goToFpStep(step) {
@@ -909,109 +1197,351 @@ function goToFpStep(step) {
       else el.classList.add("hidden");
     }
   }
+  if (window.lucide) lucide.createIcons();
 }
 
-function startFpResendTimer() {
-  if (fpTimerInterval) clearInterval(fpTimerInterval);
-  fpResendCountdown = 30;
-  const resendBtn = document.getElementById("fp-resend-btn");
-  const timerTextEl = document.getElementById("fp-timer-text");
-  const countdownEl = document.getElementById("fp-countdown");
+function stopFpTimer() {
+  if (fpTimerInterval) {
+    clearInterval(fpTimerInterval);
+    fpTimerInterval = null;
+  }
+}
 
+function formatFpTimer(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function startFpTimer(durationSeconds = 180) {
+  stopFpTimer();
+  fpRemainingSeconds = durationSeconds;
+
+  const countdownEl = document.getElementById("fp-countdown");
+  const verifyBtn = document.getElementById("fp-verify-btn");
+  const resendBtn = document.getElementById("fp-resend-btn");
+  const expiredBanner = document.getElementById("fp-expired-banner");
+  const timerBox = document.getElementById("fp-timer-box");
+
+  if (countdownEl) countdownEl.innerText = formatFpTimer(fpRemainingSeconds);
+  if (verifyBtn) {
+    verifyBtn.disabled = false;
+    verifyBtn.classList.remove("opacity-50", "cursor-not-allowed");
+  }
   if (resendBtn) resendBtn.disabled = true;
-  if (timerTextEl) timerTextEl.classList.remove("hidden");
-  if (countdownEl) countdownEl.innerText = fpResendCountdown;
+  if (expiredBanner) expiredBanner.classList.add("hidden");
+  if (timerBox) timerBox.classList.remove("hidden");
 
   fpTimerInterval = setInterval(() => {
-    fpResendCountdown--;
-    if (countdownEl) countdownEl.innerText = fpResendCountdown;
-    if (fpResendCountdown <= 0) {
-      clearInterval(fpTimerInterval);
+    fpRemainingSeconds--;
+    if (countdownEl) countdownEl.innerText = formatFpTimer(fpRemainingSeconds);
+
+    if (fpRemainingSeconds <= 0) {
+      stopFpTimer();
+      // Flag code as expired
+      if (verifyBtn) {
+        verifyBtn.disabled = true;
+        verifyBtn.classList.add("opacity-50", "cursor-not-allowed");
+      }
       if (resendBtn) resendBtn.disabled = false;
-      if (timerTextEl) timerTextEl.classList.add("hidden");
+      if (expiredBanner) expiredBanner.classList.remove("hidden");
+      if (window.lucide) lucide.createIcons();
+      showFpOtpError("OTP has expired. Please request a fresh OTP.");
     }
   }, 1000);
 }
 
+function showFpOtpError(msg) {
+  const errorBox = document.getElementById("fp-otp-error");
+  const errorMsg = document.getElementById("fp-otp-error-msg");
+  if (errorBox && errorMsg) {
+    errorMsg.innerText = msg;
+    errorBox.classList.remove("hidden");
+    if (window.lucide) lucide.createIcons();
+  }
+  showToast(msg, 'error');
+}
+
+function hideFpOtpError() {
+  const errorBox = document.getElementById("fp-otp-error");
+  const errorMsg = document.getElementById("fp-otp-error-msg");
+  if (errorBox) {
+    errorBox.classList.add("hidden");
+  }
+  if (errorMsg) {
+    errorMsg.innerText = "";
+  }
+}
+
+// Helper to interact with backend Auth API (for public.students sync)
+async function callAuthApi(payload) {
+  try {
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    return json;
+  } catch (err) {
+    let endpoint = '';
+    if (payload.action === 'forgot-password-reset') endpoint = '/api/student/forgot-password/reset-password';
+    if (endpoint) {
+      try {
+        const res2 = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const json2 = await res2.json();
+        return { success: json2.success || !json2.error, data: json2, error: json2.error };
+      } catch (e) {}
+    }
+    return { success: false, error: err.message };
+  }
+}
+
+// Step A: Email Input & OTP Dispatch via signInWithOtp
 async function handleSendOtpSubmit(event) {
   event.preventDefault();
-  const phone = document.getElementById("fp-phone-input").value.trim().replace(/\D/g, '');
-  if (phone.length !== 10) {
-    showToast("Please enter a valid 10-digit mobile number", "error");
+  const sendBtn = document.getElementById("fp-send-otp-btn");
+  if (sendBtn) {
+    sendBtn.disabled = true;
+    sendBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full mr-2"></span> Dispatching OTP...`;
+  }
+
+  const emailInput = document.getElementById("fp-email-input");
+  const emailError = document.getElementById("fp-email-error");
+  const cleanEmail = emailInput ? emailInput.value.trim().toLowerCase() : "";
+
+  if (emailError) {
+    emailError.innerText = "";
+    emailError.classList.add("hidden");
+  }
+
+  if (!cleanEmail) {
+    if (emailError) {
+      emailError.innerText = "Please enter your registered email address.";
+      emailError.classList.remove("hidden");
+    }
+    showToast("Email address is required", "error");
+    if (sendBtn) {
+      sendBtn.disabled = false;
+      sendBtn.innerHTML = `<i data-lucide="send" class="w-4 h-4"></i> Send 6-Digit OTP`;
+      if (window.lucide) lucide.createIcons();
+    }
+    emailInput?.focus();
     return;
   }
 
-  showLoading(true);
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(cleanEmail)) {
+    if (emailError) {
+      emailError.innerText = "Please enter a valid email address (e.g. student@college.edu).";
+      emailError.classList.remove("hidden");
+    }
+    showToast("Invalid email address format", "error");
+    if (sendBtn) {
+      sendBtn.disabled = false;
+      sendBtn.innerHTML = `<i data-lucide="send" class="w-4 h-4"></i> Send 6-Digit OTP`;
+      if (window.lucide) lucide.createIcons();
+    }
+    emailInput?.focus();
+    return;
+  }
+
   try {
-    const { data: student, error } = await supabase
-      .from('students')
-      .select('id, name, phone_number')
-      .eq('phone_number', phone)
-      .maybeSingle();
+    if (!supabase || !supabase.auth) {
+      throw new Error("Supabase Auth client is not initialized");
+    }
 
-    showLoading(false);
+    // Native signInWithOtp to issue a genuine email numeric code
+    const { data, error } = await supabase.auth.signInWithOtp({
+      email: cleanEmail,
+      options: {
+        shouldCreateUser: false // Strictly reject non-registered emails
+      }
+    });
 
-    if (error || !student) {
-      showToast("No student account linked to this mobile number", "error");
+    if (error) {
+      const errMsg = error.message.includes('Signups not allowed')
+        ? "No student account found with this email. Please register first."
+        : error.message;
+      if (emailError) {
+        emailError.innerText = errMsg;
+        emailError.classList.remove("hidden");
+      }
+      showToast(errMsg, "error");
       return;
     }
 
-    fpCurrentPhone = phone;
-    fpCurrentStudentId = student.id;
-    fpCurrentOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    fpCurrentEmail = cleanEmail;
 
-    const displayPhone = document.getElementById("fp-display-phone");
-    if (displayPhone) displayPhone.innerText = `+91 ${phone.slice(0, 2)}******${phone.slice(8)}`;
+    // Display target email on Step 2
+    const displayEmail = document.getElementById("fp-display-email");
+    if (displayEmail) displayEmail.innerText = cleanEmail;
 
-    const sandboxBanner = document.getElementById("fp-sandbox-otp-banner");
-    const sandboxCode = document.getElementById("fp-sandbox-otp-code");
-    if (sandboxBanner && sandboxCode) {
-      sandboxCode.innerText = fpCurrentOtp;
-      sandboxBanner.classList.remove("hidden");
+    // Transition to verification screen and initialize 3:00 countdown timer
+    goToFpStep(2);
+    startFpTimer(180);
+    hideFpOtpError();
+
+    const otpInput = document.getElementById("fp-otp-input");
+    if (otpInput) {
+      otpInput.value = "";
+      setTimeout(() => otpInput.focus(), 100);
     }
 
-    goToFpStep(2);
-    startFpResendTimer();
-    showToast("🔑 6-Digit OTP sent successfully!", "success");
-  } catch (e) {
-    showLoading(false);
-    console.error("OTP request error:", e);
-    showToast("Error requesting OTP", "error");
+    showToast("🔑 Verification OTP sent to " + cleanEmail + "! Valid for 3:00 minutes.", "success");
+  } catch (err) {
+    console.error("Error dispatching OTP:", err);
+    const errMsg = err.message || "Failed to dispatch recovery OTP. Account not found with this email.";
+    if (emailError) {
+      emailError.innerText = errMsg;
+      emailError.classList.remove("hidden");
+    }
+    showToast(errMsg, "error");
+  } finally {
+    if (sendBtn) {
+      sendBtn.disabled = false;
+      sendBtn.innerHTML = `<i data-lucide="send" class="w-4 h-4"></i> Send 6-Digit OTP`;
+      if (window.lucide) lucide.createIcons();
+    }
   }
 }
 
+// Resend OTP handler within Step 2
 async function handleResendOtp() {
-  if (!fpCurrentPhone) return;
-  fpCurrentOtp = Math.floor(100000 + Math.random() * 900000).toString();
-  const sandboxCode = document.getElementById("fp-sandbox-otp-code");
-  if (sandboxCode) sandboxCode.innerText = fpCurrentOtp;
+  if (!fpCurrentEmail) {
+    showToast("Session expired. Please enter your email again.", "error");
+    goToFpStep(1);
+    return;
+  }
 
-  startFpResendTimer();
-  showToast("🔄 New 6-Digit OTP generated!", "success");
+  const resendBtn = document.getElementById("fp-resend-btn");
+  if (resendBtn) {
+    resendBtn.disabled = true;
+    resendBtn.innerText = "Sending...";
+  }
+
+  try {
+    if (!supabase || !supabase.auth) {
+      throw new Error("Supabase Auth client is not initialized");
+    }
+
+    const { data, error } = await supabase.auth.signInWithOtp({
+      email: fpCurrentEmail,
+      options: {
+        shouldCreateUser: false
+      }
+    });
+
+    if (error) {
+      const errMsg = error.message.includes('Signups not allowed')
+        ? "No account found with this email."
+        : error.message;
+      showFpOtpError(errMsg);
+      return;
+    }
+
+    // Reset 3:00 countdown timer and re-enable verification
+    startFpTimer(180);
+    hideFpOtpError();
+
+    const otpInput = document.getElementById("fp-otp-input");
+    if (otpInput) {
+      otpInput.value = "";
+      otpInput.focus();
+    }
+
+    showToast("🔄 Fresh verification OTP sent to " + fpCurrentEmail + "! Valid for 3:00 minutes.", "success");
+  } catch (e) {
+    console.error("Resend OTP error:", e);
+    showFpOtpError(e.message || "Failed to resend OTP");
+  } finally {
+    if (resendBtn) {
+      resendBtn.disabled = false;
+      resendBtn.innerText = "Resend OTP";
+    }
+  }
 }
 
+// Step B: Native Supabase OTP Verification (type: 'email')
 async function handleVerifyOtpSubmit(event) {
   event.preventDefault();
-  const otp = document.getElementById("fp-otp-input").value.trim();
-  if (otp.length !== 6) {
-    showToast("Please enter the 6-digit OTP", "error");
+  hideFpOtpError();
+
+  if (fpRemainingSeconds <= 0) {
+    showFpOtpError("OTP has expired. Please request a fresh OTP using 'Resend OTP'.");
     return;
   }
 
-  if (otp !== fpCurrentOtp) {
-    showToast("Invalid OTP code. Please check and re-enter.", "error");
+  const otpInput = document.getElementById("fp-otp-input");
+  const cleanToken = otpInput ? otpInput.value.trim().replace(/\s+/g, '') : "";
+
+  if (cleanToken.length !== 6) {
+    showFpOtpError("Please enter the complete 6-digit OTP code");
     return;
   }
 
-  if (fpTimerInterval) clearInterval(fpTimerInterval);
-  goToFpStep(3);
-  showToast("✅ OTP Verified! Enter your new password.", "success");
+  const verifyBtn = document.getElementById("fp-verify-btn");
+  if (verifyBtn) {
+    verifyBtn.disabled = true;
+    verifyBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full mr-2"></span> Verifying...`;
+  }
+
+  try {
+    if (!supabase || !supabase.auth) {
+      throw new Error("Supabase Auth client is not initialized");
+    }
+
+    const cleanEmail = fpCurrentEmail.trim().toLowerCase();
+
+    // Direct Native Supabase Auth OTP verification (type: 'email')
+    const { data, error } = await supabase.auth.verifyOtp({
+      email: cleanEmail,
+      token: cleanToken,
+      type: 'email'
+    });
+
+    if (error) {
+      showFpOtpError(error.message || "Invalid or expired verification code. Please check and try again.");
+      return;
+    }
+
+    // On success, Supabase creates an active authenticated session.
+    // Stop timer, clear errors, and immediately transition to "New Password" inputs.
+    stopFpTimer();
+    hideFpOtpError();
+    goToFpStep(3);
+
+    const newPwdInput = document.getElementById("fp-new-pwd");
+    if (newPwdInput) {
+      newPwdInput.value = "";
+      setTimeout(() => newPwdInput.focus(), 100);
+    }
+    const confirmPwdInput = document.getElementById("fp-confirm-pwd");
+    if (confirmPwdInput) confirmPwdInput.value = "";
+
+    showToast("✅ Code verified! Create your new password.", "success");
+  } catch (err) {
+    console.error("OTP verification error:", err);
+    const msg = err.message || "Invalid or expired verification code. Please check and try again.";
+    showFpOtpError(msg);
+  } finally {
+    if (verifyBtn && fpRemainingSeconds > 0) {
+      verifyBtn.disabled = false;
+      verifyBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> Verify OTP`;
+      if (window.lucide) lucide.createIcons();
+    }
+  }
 }
 
+// Step C: Password Reset, Sign Out & Cleanup
 async function handleResetPasswordSubmit(event) {
   event.preventDefault();
-  const newPwd = document.getElementById("fp-new-pwd").value;
-  const confirmPwd = document.getElementById("fp-confirm-pwd").value;
+  const newPwd = document.getElementById("fp-new-pwd")?.value || "";
+  const confirmPwd = document.getElementById("fp-confirm-pwd")?.value || "";
 
   if (newPwd.length < 6) {
     showToast("New password must be at least 6 characters", "error");
@@ -1023,38 +1553,93 @@ async function handleResetPasswordSubmit(event) {
     return;
   }
 
-  if (!fpCurrentStudentId) {
-    showToast("Session expired. Please try again.", "error");
-    goToFpStep(1);
-    return;
+  const submitBtn = document.getElementById("fp-submit-pwd-btn");
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<span class="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full mr-2"></span> Updating...`;
   }
 
-  showLoading(true);
   try {
-    const { error } = await supabase
-      .from('students')
-      .update({ password_hash: newPwd })
-      .eq('id', fpCurrentStudentId);
-
-    showLoading(false);
-
-    if (error) {
-      showToast("Failed to reset password: " + error.message, "error");
-      return;
+    if (!supabase || !supabase.auth) {
+      throw new Error("Supabase client is not initialized");
     }
 
-    goToFpStep(4);
-    showToast("🎉 Password reset successfully!", "success");
+    // 1. Update password in Supabase Auth (authenticated via verifyOtp session)
+    const newPassword = newPwd;
+    const { error } = await supabase.auth.updateUser({
+      password: newPassword
+    });
 
+    if (error) {
+      throw error;
+    }
+
+    // 2. Sync to public.students table so student reg_no/password login remains consistent
+    try {
+      await supabase
+        .from('students')
+        .update({ password_hash: newPassword })
+        .ilike('email', fpCurrentEmail);
+    } catch (dbErr) {
+      console.warn("Notice: public.students password sync:", dbErr);
+    }
+
+    // 3. Fallback sync to local API if applicable
+    try {
+      await callAuthApi({
+        action: 'forgot-password-reset',
+        email: fpCurrentEmail,
+        new_password: newPassword
+      });
+    } catch (apiErr) {}
+
+    // 4. Once updated, call signOut to cleanly end the reset session
+    try {
+      await supabase.auth.signOut();
+    } catch (soErr) {}
+
+    // Transition to Confirmation step
+    goToFpStep(4);
+    showToast("Password updated successfully! Please login", "success");
+
+    // Cleanly clear temporary reset state
+    stopFpTimer();
+    fpCurrentEmail = "";
+    fpRemainingSeconds = 180;
+
+    // Automatic redirection to login after 2.2 seconds
     setTimeout(() => {
       closeForgotPasswordModal();
       switchAuthTab('login');
     }, 2200);
-  } catch (e) {
-    showLoading(false);
-    console.error("Reset password error:", e);
-    showToast("Error resetting password", "error");
+  } catch (err) {
+    console.error("Password reset error:", err);
+    showToast("Error updating password: " + (err.message || "Unknown error"), "error");
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `<i data-lucide="shield-check" class="w-4 h-4"></i> Change Password`;
+      if (window.lucide) lucide.createIcons();
+    }
   }
+}
+
+// Automatically detect if user authenticated via email link or existing session
+if (supabase && supabase.auth) {
+  supabase.auth.onAuthStateChange((event, session) => {
+    if ((event === 'SIGNED_IN' || event === 'PASSWORD_RECOVERY') && session && session.user) {
+      const modal = document.getElementById("forgot-password-modal");
+      if (modal && !modal.classList.contains("hidden")) {
+        if (!fpCurrentEmail && session.user.email) {
+          fpCurrentEmail = session.user.email;
+        }
+        stopFpTimer();
+        hideFpOtpError();
+        goToFpStep(3);
+        showToast("✅ Authenticated! Create your new password.", "success");
+      }
+    }
+  });
 }
 
 function togglePasswordVisibility(inputId, toggleEl) {

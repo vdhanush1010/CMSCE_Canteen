@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Student Registration - CMSCE Canteen</title>
+  <meta name="description" content="Register your student account with mandatory email for secure ordering and password recovery.">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: {
+              DEFAULT: '#FF6B00',
+              dark: '#E05A00',
+              light: '#FFF0E5'
+            },
+            text: {
+              primary: '#0F172A',
+              secondary: '#64748B'
+            }
+          },
+          fontFamily: {
+            poppins: ['Poppins', 'sans-serif'],
+            outfit: ['Outfit', 'sans-serif']
+          }
+        }
+      }
+    };
+  </script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Supabase JS Client SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body {
+      font-family: 'Outfit', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      opacity: 0;
+      z-index: 2000;
+    }
+
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
+    .pwd-toggle {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      cursor: pointer;
+      color: #94A3B8;
+      transition: color 0.2s;
+    }
+
+    .pwd-toggle:hover {
+      color: #0F172A;
+    }
+  </style>
+</head>
+
+<body class="bg-slate-100 text-text-primary min-h-screen flex flex-col items-center justify-start py-6 px-4">
+
+  <!-- Container -->
+  <div class="w-full max-w-md bg-white shadow-2xl rounded-3xl overflow-hidden flex flex-col border border-slate-200/80">
+
+    <!-- Header -->
+    <div class="p-6 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="index.html" class="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
+          <i data-lucide="arrow-left" class="w-4 h-4"></i>
+        </a>
+        <div>
+          <h1 class="font-bold text-base font-poppins leading-tight">Student Registration</h1>
+          <p class="text-[11px] text-slate-400">Create your account</p>
+        </div>
+      </div>
+      <div class="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary">
+        <i data-lucide="user-plus" class="w-4 h-4"></i>
+      </div>
+    </div>
+
+    <!-- Registration Form -->
+    <form id="standalone-register-form" onsubmit="handleStandaloneRegisterSubmit(event)" class="p-6 space-y-4">
+
+      <!-- Full Name -->
+      <div>
+        <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase tracking-wider">
+          Full Name <span class="text-rose-500 font-bold">*</span>
+        </label>
+        <div class="relative">
+          <i data-lucide="user" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+          <input type="text" id="reg-name" required placeholder="Your full name"
+            class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+        </div>
+      </div>
+
+      <!-- Register Number -->
+      <div>
+        <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase tracking-wider">
+          Register Number <span class="text-rose-500 font-bold">*</span>
+        </label>
+        <div class="relative">
+          <i data-lucide="hash" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+          <input type="text" id="reg-no" required placeholder="e.g. 620523104001"
+            class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm font-mono focus:outline-none focus:border-primary transition-colors bg-white">
+        </div>
+      </div>
+
+      <!-- Mobile Number -->
+      <div>
+        <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase tracking-wider">
+          Mobile Number <span class="text-rose-500 font-bold">* (Strict 10 Digits)</span>
+        </label>
+        <div class="relative">
+          <i data-lucide="phone" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+          <input type="tel" id="reg-phone" required maxlength="10" placeholder="10-digit mobile number"
+            oninput="this.value = this.value.replace(/\D/g, '')"
+            class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+        </div>
+      </div>
+
+      <!-- Mandatory Email Address -->
+      <div>
+        <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase tracking-wider">
+          Email Address <span class="text-rose-500 font-bold">* (Mandatory for Recovery)</span>
+        </label>
+        <div class="relative">
+          <i data-lucide="mail" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+          <input type="email" id="reg-email" required placeholder="e.g. student@college.edu"
+            class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+        </div>
+        <p id="reg-email-error" class="text-[11px] text-rose-500 mt-1 hidden"></p>
+      </div>
+
+      <!-- Department -->
+      <div>
+        <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase tracking-wider">
+          Department <span class="text-rose-500 font-bold">*</span>
+        </label>
+        <div class="relative">
+          <i data-lucide="graduation-cap" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+          <input type="text" id="reg-dept" required placeholder="e.g. Computer Science"
+            class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+        </div>
+      </div>
+
+      <!-- Date of Birth -->
+      <div>
+        <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase tracking-wider">
+          Date of Birth <span class="text-rose-500 font-bold">*</span>
+        </label>
+        <div class="relative">
+          <i data-lucide="calendar" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+          <input type="date" id="reg-dob" required
+            class="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+        </div>
+      </div>
+
+      <!-- Password -->
+      <div>
+        <label class="block text-xs font-semibold text-text-secondary mb-1 uppercase tracking-wider">
+          Password <span class="text-rose-500 font-bold">* (Min. 6 Characters)</span>
+        </label>
+        <div class="relative">
+          <i data-lucide="lock" class="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400"></i>
+          <input type="password" id="reg-password" required placeholder="Minimum 6 characters"
+            class="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-primary transition-colors bg-white">
+          <span class="pwd-toggle" onclick="togglePasswordVisibility('reg-password', this)">
+            <i data-lucide="eye" class="w-4 h-4"></i>
+          </span>
+        </div>
+      </div>
+
+      <!-- Submit Button -->
+      <button type="submit" id="reg-submit-btn"
+        class="w-full py-3 bg-primary hover:bg-primary-dark text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 shadow-md transition-all active:scale-[0.99] mt-2">
+        <i data-lucide="user-check" class="w-4 h-4"></i>
+        <span>Create Student Account</span>
+      </button>
+
+      <!-- Back to Login -->
+      <div class="text-center pt-2">
+        <p class="text-xs text-text-secondary">
+          Already have an account?
+          <a href="index.html" class="text-primary font-bold hover:underline">Sign In here</a>
+        </p>
+      </div>
+
+    </form>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast" class="toast flex items-center gap-2 px-4 py-3 rounded-2xl shadow-xl border text-xs font-semibold text-white bg-slate-900 border-slate-800">
+    <span id="toast-icon"></span>
+    <span id="toast-message">Notification message</span>
+  </div>
+
+  <!-- Scripts -->
+  <script src="register.js"></script>
+</body>
+
+</html>

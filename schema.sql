@@ -15,6 +15,7 @@ CREATE TABLE students (
     dob DATE NOT NULL,
     phone_number VARCHAR(20) UNIQUE NOT NULL,
     email VARCHAR(150),
+    avatar_url TEXT,
     password_hash VARCHAR(255) NOT NULL,
     wallet_balance DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP

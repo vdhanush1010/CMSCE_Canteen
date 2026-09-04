@@ -58,24 +58,30 @@
         <p class="text-xs text-slate-400 mt-1">Authorized logins only</p>
       </div>
 
+      <!-- In-card error alert badge -->
+      <div id="manager-login-error" class="hidden text-xs text-rose-300 bg-rose-950/70 border border-rose-800/80 rounded-xl px-3.5 py-2.5 flex items-center gap-2.5">
+        <i data-lucide="alert-circle" class="w-4 h-4 text-rose-400 shrink-0"></i>
+        <span id="manager-login-error-text" class="font-medium">Invalid Username or Password</span>
+      </div>
+
       <form id="manager-login-form" class="space-y-4" onsubmit="handleManagerLogin(event)">
         <div class="space-y-1">
-          <label class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Mobile Number</label>
-          <input type="tel" id="login-phone" placeholder="Enter mobile number"
-            class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white"
-            required>
+          <label for="managerUsername" class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">USERNAME</label>
+          <input type="text" id="managerUsername" name="managerUsername" placeholder="Enter username"
+            class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white transition-colors"
+            autocomplete="username" required>
         </div>
 
         <div class="space-y-1">
-          <label class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">OTP PIN</label>
-          <input type="password" id="login-otp" placeholder="Enter otp pin" maxlength="4"
-            class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs tracking-[0.5em] text-center focus:outline-none focus:border-primary text-white"
-            required>
+          <label for="managerPassword" class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">PASSWORD</label>
+          <input type="password" id="managerPassword" name="managerPassword" placeholder="Enter password"
+            class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs focus:outline-none focus:border-primary text-white transition-colors"
+            autocomplete="current-password" required>
         </div>
 
-        <button type="submit"
-          class="w-full bg-primary hover:bg-primary-dark text-slate-900 font-bold py-2.5 rounded-xl transition-all text-xs">
-          Login
+        <button type="submit" id="manager-login-btn"
+          class="w-full bg-primary hover:bg-primary-dark text-slate-900 font-bold py-2.5 rounded-xl transition-all text-xs flex items-center justify-center gap-2 shadow-lg active:scale-[0.99]">
+          <span>Login</span>
         </button>
       </form>
     </div>

@@ -216,22 +216,41 @@ app.post('/api/student/register', async (req, res) => {
       }
     }
 
-    // Try inserting with phone_number and email into Supabase first
+    // Try inserting with phone and email into Supabase first
     let newStudent = null;
     try {
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('students')
         .insert([{
           reg_no: formattedReg,
           name,
           department,
           dob,
-          phone_number: cleanPhone,
+          phone: cleanPhone,
           email: cleanEmail,
           password_hash: password
         }])
         .select()
         .single();
+
+      if (error && (error.code === 'PGRST204' || error.message.includes('column'))) {
+        const fb = await supabase
+          .from('students')
+          .insert([{
+            reg_no: formattedReg,
+            name,
+            department,
+            dob,
+            phone_number: cleanPhone,
+            email: cleanEmail,
+            password_hash: password
+          }])
+          .select()
+          .single();
+        data = fb.data;
+        error = fb.error;
+      }
+
       if (!error && data) {
         newStudent = data;
       }
@@ -298,11 +317,12 @@ app.post('/api/student/login', async (req, res) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    const ext = studentExtendedProfiles[student.id];
-    if (ext) {
-      student.phone_number = student.phone_number || ext.phone_number;
-      student.email = student.email || ext.email;
-    }
+    const ext = studentExtendedProfiles[student.id] || {};
+    const resolvedPhone = student.phone || student.phone_number || ext.phone || ext.phone_number || '';
+    student.phone = resolvedPhone;
+    student.phone_number = resolvedPhone;
+    student.email = student.email || ext.email || '';
+    student.avatar_url = student.avatar_url || ext.avatar_url || '';
     
     res.json({ success: true, student });
   } catch (err) {
@@ -321,11 +341,12 @@ app.get('/api/student/:id', async (req, res) => {
       .maybeSingle();
     if (error) throw error;
     if (data) {
-      const ext = studentExtendedProfiles[data.id];
-      if (ext) {
-        data.phone_number = data.phone_number || ext.phone_number;
-        data.email = data.email || ext.email;
-      }
+      const ext = studentExtendedProfiles[data.id] || {};
+      const resolvedPhone = data.phone || data.phone_number || ext.phone || ext.phone_number || '';
+      data.phone = resolvedPhone;
+      data.phone_number = resolvedPhone;
+      data.email = data.email || ext.email || '';
+      data.avatar_url = data.avatar_url || ext.avatar_url || '';
     }
     res.json(data);
   } catch (err) {
@@ -334,36 +355,144 @@ app.get('/api/student/:id', async (req, res) => {
   }
 });
 
-// ----------------------------------------------------
-// MOBILE NUMBER-ONLY "FORGOT PASSWORD" OTP FLOW
-// ----------------------------------------------------
+// 2.6. Update Student Profile
+app.put('/api/student/:id', async (req, res) => {
+  try {
+    const { name, department, phone, phone_number, email } = req.body;
+    const studentId = req.params.id;
+    const cleanPhone = (phone || phone_number) ? String(phone || phone_number).trim().replace(/\D/g, '') : '';
+    const cleanEmail = email ? String(email).trim() : '';
 
-// Step 1: Request 6-Digit OTP via Mobile Number
-app.post('/api/student/forgot-password/request-otp', async (req, res) => {
-  const { phone_number } = req.body;
-  if (!phone_number) {
-    return res.status(400).json({ error: "Mobile Number is required." });
+    studentExtendedProfiles[studentId] = {
+      ...(studentExtendedProfiles[studentId] || {}),
+      phone: cleanPhone,
+      phone_number: cleanPhone,
+      email: cleanEmail,
+      department: department ? department.trim() : '',
+      name: name ? name.trim() : ''
+    };
+    saveExtendedProfiles();
+
+    try {
+      const { error: updErr } = await supabase.from('students').update({
+        phone: cleanPhone,
+        email: cleanEmail || null,
+        department,
+        name
+      }).eq('id', studentId);
+
+      if (updErr) {
+        await supabase.from('students').update({
+          phone_number: cleanPhone,
+          email: cleanEmail || null,
+          department,
+          name
+        }).eq('id', studentId);
+      }
+    } catch (e) {
+      try {
+        await supabase.from('students').update({ department, name }).eq('id', studentId);
+      } catch (e2) {}
+    }
+
+    res.json({ success: true, student: { id: studentId, name, department, phone: cleanPhone, phone_number: cleanPhone, email: cleanEmail } });
+  } catch (err) {
+    console.error("Update student profile error:", err.message);
+    res.status(500).json({ error: err.message });
   }
+});
 
-  const cleanPhone = String(phone_number).trim().replace(/\D/g, '');
-  if (cleanPhone.length !== 10) {
-    return res.status(400).json({ error: "Please enter a valid 10-digit Mobile Number." });
+// 2.7. Update Student Avatar
+app.post('/api/student/update-avatar', async (req, res) => {
+  try {
+    const { id, avatar_url } = req.body;
+    if (!id || !avatar_url) return res.status(400).json({ error: "Missing id or avatar_url" });
+
+    studentExtendedProfiles[id] = {
+      ...(studentExtendedProfiles[id] || {}),
+      avatar_url
+    };
+    saveExtendedProfiles();
+
+    try {
+      await supabase.from('students').update({ avatar_url }).eq('id', id);
+    } catch (e) {}
+
+    res.json({ success: true, id, avatar_url });
+  } catch (err) {
+    console.error("Update student avatar error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// EMAIL-BASED "FORGOT PASSWORD" OTP FLOW (3-MINUTE VALIDITY)
+// ----------------------------------------------------
+const { sendRecoveryEmail } = require('./api/emailService');
+const ACTIVE_OTPS_FILE = path.join(__dirname, 'active_otps.json');
+
+function getActiveEmailResetOtps() {
+  try {
+    if (fs.existsSync(ACTIVE_OTPS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ACTIVE_OTPS_FILE, 'utf8'));
+      const now = Date.now();
+      const valid = {};
+      let changed = false;
+      for (const [key, session] of Object.entries(data)) {
+        if (session && session.expires_at > now) {
+          valid[key] = session;
+        } else {
+          changed = true;
+        }
+      }
+      if (changed) {
+        fs.writeFileSync(ACTIVE_OTPS_FILE, JSON.stringify(valid, null, 2), 'utf8');
+      }
+      return valid;
+    }
+  } catch (e) {
+    console.error("Error reading active OTPs file:", e);
+  }
+  return {};
+}
+
+function saveActiveEmailResetOtp(key, sessionData) {
+  try {
+    const otps = getActiveEmailResetOtps();
+    if (sessionData === null) {
+      delete otps[key];
+    } else {
+      otps[key] = sessionData;
+    }
+    fs.writeFileSync(ACTIVE_OTPS_FILE, JSON.stringify(otps, null, 2), 'utf8');
+    return otps[key];
+  } catch (e) {
+    console.error("Error writing active OTPs file:", e);
+  }
+}
+
+// Step 1: Request 6-Digit OTP via Email
+app.post('/api/student/forgot-password/request-otp', async (req, res) => {
+  const { email, phone_number } = req.body;
+  const targetEmail = email ? String(email).trim().toLowerCase() : null;
+  const targetPhone = phone_number ? String(phone_number).trim().replace(/\D/g, '') : null;
+
+  if (!targetEmail && !targetPhone) {
+    return res.status(400).json({ error: "Registered Email Address is required." });
   }
 
   try {
-    // 1. Check if student exists in extended profiles or Supabase
     let student = null;
 
-    // Check extended profiles map
+    // Search extended profiles map first
     for (const [id, ext] of Object.entries(studentExtendedProfiles)) {
-      if (ext && ext.phone_number === cleanPhone) {
-        const { data: dbStudent } = await supabase
-          .from('students')
-          .select('*')
-          .eq('id', id)
-          .maybeSingle();
-        if (dbStudent) {
-          student = dbStudent;
+      if (ext) {
+        if (targetEmail && ext.email && ext.email.trim().toLowerCase() === targetEmail) {
+          student = { id, ...ext };
+          break;
+        }
+        if (targetPhone && ext.phone_number === targetPhone) {
+          student = { id, ...ext };
           break;
         }
       }
@@ -372,44 +501,64 @@ app.post('/api/student/forgot-password/request-otp', async (req, res) => {
     // Check Supabase DB directly if not found
     if (!student) {
       try {
-        const { data: dbStudent } = await supabase
-          .from('students')
-          .select('*')
-          .eq('phone_number', cleanPhone)
-          .maybeSingle();
+        let query = supabase.from('students').select('*');
+        if (targetEmail) query = query.ilike('email', targetEmail);
+        else if (targetPhone) query = query.eq('phone_number', targetPhone);
+        const { data: dbStudent } = await query.maybeSingle();
         if (dbStudent) student = dbStudent;
       } catch (e) {}
     }
 
     if (!student) {
       return res.status(404).json({ 
-        error: "No student account found with this Mobile Number. Please verify or register." 
+        error: "No student account found with this email address. Please check your spelling or register." 
       });
     }
 
-    // 2. Generate 6-digit OTP
+    // Generate 6-digit OTP with strict 3-minute validity (180 seconds)
     const otp = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes validity
+    const expiresAt = Date.now() + 180 * 1000; // 3:00 minutes validity
+    const lookupKey = targetEmail || targetPhone;
 
-    activePasswordResetOtps.set(cleanPhone, {
+    saveActiveEmailResetOtp(lookupKey, {
       otp,
       student_id: student.id,
+      student_name: student.name,
       reg_no: student.reg_no,
-      expires_at: expiresAt
+      email: student.email || targetEmail,
+      expires_at: expiresAt,
+      verified: false
     });
 
     console.log(`\n======================================================`);
-    console.log(`[SMS OTP SIMULATOR] 📱 Sent to +91 ${cleanPhone}`);
-    console.log(`[SMS OTP SIMULATOR] 🔑 6-Digit Password Reset OTP: ${otp}`);
-    console.log(`[SMS OTP SIMULATOR] ⏳ Valid for 5 Minutes`);
+    console.log(`[EMAIL OTP DISPATCH] 📧 Sent to: ${student.email || lookupKey} (${student.name})`);
+    console.log(`[EMAIL OTP DISPATCH] 🔑 6-Digit Password Reset OTP: ${otp}`);
+    console.log(`[EMAIL OTP DISPATCH] ⏳ Strict 3-Minute Validity: Expires in 180s`);
     console.log(`======================================================\n`);
+
+    // Dispatch real email via emailService
+    const emailResult = await sendRecoveryEmail({
+      to: student.email || lookupKey,
+      name: student.name,
+      otp
+    });
+
+    // Also trigger Supabase Auth recovery in background as secondary channel
+    try {
+      if (student.email || targetEmail) {
+        await supabase.auth.resetPasswordForEmail(student.email || targetEmail);
+      }
+    } catch (sErr) {}
 
     res.json({
       success: true,
-      message: `6-digit verification OTP sent to +91 ${cleanPhone.slice(0, 2)}******${cleanPhone.slice(8)}`,
-      test_otp: otp, // For instant sandbox and development test visibility
-      expires_in_seconds: 300,
-      phone_number: cleanPhone
+      message: `6-digit verification code sent to ${student.email || lookupKey}`,
+      test_otp: otp, // Enables instant fallback and sandbox testing if mail server rate-limits
+      preview_url: emailResult.preview_url || null,
+      email_sent: emailResult.sent,
+      delivery_mode: emailResult.mode || (emailResult.sent ? 'smtp' : 'simulated'),
+      expires_in_seconds: 180,
+      email: student.email || lookupKey
     });
   } catch (err) {
     console.error("Request OTP error:", err.message);
@@ -419,76 +568,75 @@ app.post('/api/student/forgot-password/request-otp', async (req, res) => {
 
 // Step 2: Verify OTP
 app.post('/api/student/forgot-password/verify-otp', async (req, res) => {
-  const { phone_number, otp } = req.body;
-  if (!phone_number || !otp) {
-    return res.status(400).json({ error: "Mobile Number and 6-digit OTP are required." });
+  const { email, phone_number, otp } = req.body;
+  const lookupKey = (email ? String(email).trim().toLowerCase() : null) || (phone_number ? String(phone_number).trim().replace(/\D/g, '') : null);
+
+  if (!lookupKey || !otp) {
+    return res.status(400).json({ error: "Email and 6-digit OTP are required." });
   }
 
-  const cleanPhone = String(phone_number).trim().replace(/\D/g, '');
   const cleanOtp = String(otp).trim();
+  const otps = getActiveEmailResetOtps();
+  const session = otps[lookupKey];
 
-  const session = activePasswordResetOtps.get(cleanPhone);
   if (!session) {
-    return res.status(400).json({ error: "No active OTP request found for this number. Please request a new OTP." });
+    return res.status(400).json({ error: "No active OTP request found. Please request a new OTP." });
   }
 
   if (Date.now() > session.expires_at) {
-    activePasswordResetOtps.delete(cleanPhone);
-    return res.status(400).json({ error: "OTP expired. Please request a fresh OTP." });
+    saveActiveEmailResetOtp(lookupKey, null);
+    return res.status(400).json({ error: "OTP has expired (3-minute window ended). Please request a fresh OTP." });
   }
 
-  if (session.otp !== cleanOtp && cleanOtp !== '123456') {
-    return res.status(400).json({ error: "Invalid 6-digit OTP. Please check and try again." });
+  if (session.otp !== cleanOtp) {
+    return res.status(400).json({ error: "Invalid 6-digit verification code. Please check and try again." });
   }
+
+  session.verified = true;
+  saveActiveEmailResetOtp(lookupKey, session);
 
   res.json({
     success: true,
-    message: "OTP verified successfully. You may now set a new password."
+    message: "OTP verified successfully. You may now create a new password."
   });
 });
 
 // Step 3 & 4: Reset Password
 app.post('/api/student/forgot-password/reset-password', async (req, res) => {
-  const { phone_number, otp, new_password } = req.body;
-  if (!phone_number || !otp || !new_password) {
+  const { email, phone_number, otp, new_password } = req.body;
+  const lookupKey = (email ? String(email).trim().toLowerCase() : null) || (phone_number ? String(phone_number).trim().replace(/\D/g, '') : null);
+
+  if (!lookupKey || !new_password) {
     return res.status(400).json({ error: "Missing required reset password fields." });
   }
-
-  const cleanPhone = String(phone_number).trim().replace(/\D/g, '');
-  const cleanOtp = String(otp).trim();
 
   if (new_password.length < 6) {
     return res.status(400).json({ error: "Password must be at least 6 characters long." });
   }
 
-  const session = activePasswordResetOtps.get(cleanPhone);
-  if (!session) {
-    return res.status(400).json({ error: "Session expired or invalid. Please start the password reset flow again." });
-  }
-
-  if (Date.now() > session.expires_at) {
-    activePasswordResetOtps.delete(cleanPhone);
-    return res.status(400).json({ error: "OTP has expired. Please request a new OTP." });
-  }
-
-  if (session.otp !== cleanOtp && cleanOtp !== '123456') {
-    return res.status(400).json({ error: "Invalid OTP verification code." });
+  const otps = getActiveEmailResetOtps();
+  const session = otps[lookupKey];
+  if (!session || !session.verified) {
+    return res.status(400).json({ error: "Unauthorized: Please verify your OTP code before resetting password." });
   }
 
   try {
-    // Update password in Supabase
-    const { data, error } = await supabase
+    // Update password in Supabase students table
+    await supabase
       .from('students')
       .update({ password_hash: new_password })
-      .eq('id', session.student_id)
-      .select();
+      .eq('id', session.student_id);
 
-    if (error) throw error;
+    // Update extended profile
+    if (studentExtendedProfiles[session.student_id]) {
+      studentExtendedProfiles[session.student_id].password_hash = new_password;
+      saveStudentExtendedProfiles();
+    }
 
     // Invalidate OTP
-    activePasswordResetOtps.delete(cleanPhone);
+    saveActiveEmailResetOtp(lookupKey, null);
 
-    console.log(`[Password Reset] Password updated successfully for student ${session.reg_no} (${cleanPhone})`);
+    console.log(`[Password Reset] Password updated successfully for student ${session.reg_no} (${lookupKey})`);
 
     res.json({
       success: true,

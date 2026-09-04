@@ -65,41 +65,88 @@ function showLoading(show) {
 
 // 3. Manager Login Authentication
 async function handleManagerLogin(event) {
-  event.preventDefault();
-  const phone = document.getElementById("login-phone").value.trim();
-  const otp = document.getElementById("login-otp").value.trim();
+  if (event) event.preventDefault();
+
+  const usernameInput = document.getElementById("managerUsername") || document.getElementById("login-phone");
+  const passwordInput = document.getElementById("managerPassword") || document.getElementById("login-otp");
+  const errorBadge = document.getElementById("manager-login-error");
+  const errorText = document.getElementById("manager-login-error-text");
+
+  if (errorBadge) errorBadge.classList.add("hidden");
+
+  const username = usernameInput ? usernameInput.value.trim() : "";
+  const password = passwordInput ? passwordInput.value.trim() : "";
+
+  if (!username || !password) {
+    if (errorBadge) {
+      if (errorText) errorText.innerText = "Please enter both username and password";
+      errorBadge.classList.remove("hidden");
+      if (window.lucide) lucide.createIcons();
+    }
+    showToast("Please enter username and password", "error");
+    return;
+  }
 
   showLoading(true);
   try {
-    const res = await fetch('/api/auth', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'manager-login', phone, otp })
-    });
-    const result = await res.json();
+    // Query dedicated Supabase table 'canteen_managers'
+    const { data, error } = await supabase
+      .from('canteen_managers')
+      .select('*')
+      .eq('username', username)
+      .eq('password', password)
+      .maybeSingle();
+
     showLoading(false);
 
-    if (!res.ok || !result.success) {
-      showToast(result.error || "Authentication failed", "error");
+    if (error || !data) {
+      console.warn("Manager authentication failure:", error ? error.message : "Credentials mismatch");
+      if (errorBadge) {
+        if (errorText) errorText.innerText = "Invalid Username or Password";
+        errorBadge.classList.remove("hidden");
+        if (window.lucide) lucide.createIcons();
+      }
+      showToast("Invalid Username or Password", "error");
       return;
     }
 
+    // Match found - persist manager session
+    const managerState = {
+      id: data.id,
+      role: data.role || 'manager',
+      username: data.username
+    };
+    sessionStorage.setItem('canteen_manager_auth', JSON.stringify(managerState));
     sessionStorage.setItem("manager_auth", "true");
-    showToast("Login successful!", "success");
 
-    document.getElementById("login-screen").classList.add("hidden");
-    document.getElementById("dashboard-screen").classList.remove("hidden");
+    if (errorBadge) errorBadge.classList.add("hidden");
+    showToast(`Welcome, ${data.username}!`, "success");
 
-    initDashboard();
+    // Transition smoothly to dashboard
+    const loginScreen = document.getElementById("login-screen");
+    const dashboardScreen = document.getElementById("dashboard-screen");
+    if (loginScreen && dashboardScreen) {
+      loginScreen.classList.add("hidden");
+      dashboardScreen.classList.remove("hidden");
+      initDashboard();
+    } else {
+      window.location.href = "manager.html";
+    }
   } catch (err) {
     showLoading(false);
-    console.error("Login request error:", err);
+    console.error("Manager login exception:", err);
+    if (errorBadge) {
+      if (errorText) errorText.innerText = "Connection error. Please try again.";
+      errorBadge.classList.remove("hidden");
+      if (window.lucide) lucide.createIcons();
+    }
     showToast("Network error during login", "error");
   }
 }
 
 function handleLogout() {
   sessionStorage.removeItem("manager_auth");
+  sessionStorage.removeItem("canteen_manager_auth");
   if (activeOrdersChannel && supabase) {
     supabase.removeChannel(activeOrdersChannel);
     activeOrdersChannel = null;
@@ -108,10 +155,19 @@ function handleLogout() {
     clearInterval(clockInterval);
     clockInterval = null;
   }
-  document.getElementById("dashboard-screen").classList.add("hidden");
-  document.getElementById("login-screen").classList.remove("hidden");
-  document.getElementById("login-phone").value = "";
-  document.getElementById("login-otp").value = "";
+  const dashboardScreen = document.getElementById("dashboard-screen");
+  const loginScreen = document.getElementById("login-screen");
+  if (dashboardScreen) dashboardScreen.classList.add("hidden");
+  if (loginScreen) loginScreen.classList.remove("hidden");
+
+  const usernameInput = document.getElementById("managerUsername");
+  const passwordInput = document.getElementById("managerPassword");
+  if (usernameInput) usernameInput.value = "";
+  if (passwordInput) passwordInput.value = "";
+
+  const errorBadge = document.getElementById("manager-login-error");
+  if (errorBadge) errorBadge.classList.add("hidden");
+
   showToast("Logged out successfully", "success");
 }
 
@@ -3105,8 +3161,8 @@ async function verifyOrderLookup(identifier, secondaryIdentifier = null) {
 // 20. Startup event listener
 window.addEventListener("DOMContentLoaded", () => {
   loadCategories();
-  const isAuth = sessionStorage.getItem("manager_auth");
-  if (isAuth === "true") {
+  const isAuth = sessionStorage.getItem("canteen_manager_auth") || (sessionStorage.getItem("manager_auth") === "true");
+  if (isAuth) {
     document.getElementById("login-screen").classList.add("hidden");
     document.getElementById("dashboard-screen").classList.remove("hidden");
     initDashboard();
